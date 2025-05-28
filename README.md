@@ -6,10 +6,17 @@ A minimal RAG (Retrieval-Augmented Generation) system using Elasticsearch's inge
 
 - Document ingestion with automatic content extraction using attachment processor
 - Text embedding generation using HuggingFace text-embeddings-inference API (CPU version)
-- Hybrid search combining BM25 and vector similarity using RRF (Reciprocal Rank Fusion)
+- Hybrid search combining BM25 and vector similarity (basic license compatible)
 - Support for various document formats (PDF, DOC, TXT, etc.)
 - Docker-based deployment with Elasticsearch 8.17 and HuggingFace embedding service
 - Uses BAAI/bge-small-en-v1.5 model with HF_MIRROR support for China users
+
+## License Compatibility
+
+This system is designed to work with Elasticsearch's basic (free) license:
+- Uses basic search features instead of advanced RRF (Reciprocal Rank Fusion)
+- Implements simple result merging for hybrid search
+- All core RAG functionality available without paid features
 
 ## Quick Start with Docker
 
@@ -51,6 +58,14 @@ python main.py setup
 - **Vector Dimensions**: 384
 - **Language**: English
 - **Performance**: Good balance of speed and quality for general RAG tasks
+
+## Search Features
+
+The system provides hybrid search capabilities:
+- **BM25 Search**: Traditional keyword-based search with boosted scoring
+- **Vector Search**: Semantic similarity using text embeddings
+- **Simple Fusion**: Basic result merging compatible with free Elasticsearch license
+- **Fallback**: Graceful degradation to BM25-only if vector search fails
 
 ## Configuration for China Users
 
@@ -105,6 +120,11 @@ docker-compose down -v
 export HF_MIRROR=https://hf-mirror.com
 docker-compose up -d
 ```
+
+### Search Issues
+- If vector search fails, the system automatically falls back to BM25 search
+- Check inference service status: `docker-compose logs huggingface-embedding`
+- Verify inference service creation: check Elasticsearch logs during setup
 
 ### First Time Setup
 - The first startup may take 3-5 minutes for model download
@@ -175,6 +195,7 @@ docker-compose down -v
 - Additional 1.5GB RAM for CPU-based embedding service
 - No GPU required (CPU-only deployment)
 - Internet connection for initial model download (~133MB)
+- Elasticsearch basic license (free) - no paid features required
 
 ## Performance Notes
 
@@ -182,5 +203,6 @@ docker-compose down -v
 - Model is downloaded once and cached for future use
 - Good performance for English text embedding tasks
 - First startup includes model download time (3-5 minutes)
+- Hybrid search provides good relevance without requiring paid Elasticsearch features
 
-This implementation provides a minimal but functional RAG system that leverages modern Elasticsearch capabilities and reliable HuggingFace embeddings with CPU-only requirements.
+This implementation provides a minimal but functional RAG system that leverages modern Elasticsearch capabilities and reliable HuggingFace embeddings with CPU-only requirements and basic license compatibility.

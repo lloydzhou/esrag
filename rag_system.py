@@ -26,6 +26,10 @@ class RAGSystem:
         """Search in knowledge base"""
         return self.search_engine.search(query, size)
     
+    def advanced_search(self, query, size=10, enable_fuzzy=False, enable_phrase=False):
+        """Advanced search with multiple search methods"""
+        return self.search_engine.advanced_search(query, size, enable_fuzzy, enable_phrase)
+    
     def get_answer(self, query, size=5):
         """Get answer based on search results (basic implementation)"""
         search_results = self.search(query, size)

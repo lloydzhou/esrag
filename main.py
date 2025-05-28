@@ -52,6 +52,7 @@ def main():
         print("  python main.py wait")
         print("  python main.py add <file_path>")
         print("  python main.py search <query>")
+        print("  python main.py advanced-search <query> [--fuzzy] [--phrase]")
         return
     
     command = sys.argv[1]
@@ -86,9 +87,39 @@ def main():
             print(f"Found {results['total']} results:")
             for i, result in enumerate(results['results'], 1):
                 print(f"\n{i}. {result['filename']} (Score: {result['score']:.4f})")
+                if 'rrf_score' in result:
+                    print(f"   RRF Score: {result['rrf_score']:.6f}")
                 print(f"   {result['content'][:200]}...")
         except Exception as e:
             print(f"Error searching: {e}")
+    
+    elif command == "advanced-search" and len(sys.argv) > 2:
+        # Parse arguments
+        args = sys.argv[2:]
+        enable_fuzzy = '--fuzzy' in args
+        enable_phrase = '--phrase' in args
+        
+        # Remove flags from query
+        query_words = [word for word in args if not word.startswith('--')]
+        query = " ".join(query_words)
+        
+        try:
+            results = rag.advanced_search(query, enable_fuzzy=enable_fuzzy, enable_phrase=enable_phrase)
+            search_methods = ["BM25", "Vector"]
+            if enable_fuzzy:
+                search_methods.append("Fuzzy")
+            if enable_phrase:
+                search_methods.append("Phrase")
+            
+            print(f"Advanced search using: {', '.join(search_methods)}")
+            print(f"Found {results['total']} results:")
+            for i, result in enumerate(results['results'], 1):
+                print(f"\n{i}. {result['filename']} (Score: {result['score']:.4f})")
+                if 'rrf_score' in result:
+                    print(f"   RRF Score: {result['rrf_score']:.6f}")
+                print(f"   {result['content'][:200]}...")
+        except Exception as e:
+            print(f"Error in advanced search: {e}")
     
     else:
         print("Invalid command or missing arguments")
