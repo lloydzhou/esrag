@@ -1,0 +1,84 @@
+version: '3.8'
+
+services:
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.17.0
+    container_name: rag_elasticsearch
+    environment:
+      - node.name=es01
+      - cluster.name=rag-cluster
+      - discovery.type=single-node
+      - bootstrap.memory_lock=true
+      - "ES_JAVA_OPTS=-Xms2g -Xmx2g"
+      - xpack.security.enabled=false
+      - xpack.security.enrollment.enabled=false
+      - xpack.security.http.ssl.enabled=false
+      - xpack.security.transport.ssl.enabled=false
+      - ingest.geoip.downloader.enabled=false
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+    volumes:
+      - elasticsearch_data:/usr/share/elasticsearch/data
+    ports:
+      - "9200:9200"
+      - "9300:9300"
+    networks:
+      - rag_network
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:9200/_cluster/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  huggingface-embedding:
+    image: ghcr.io/huggingface/text-embeddings-inference:cpu-1.7.0
+    container_name: rag_embedding_api
+    environment:
+      - HF_MIRROR=${HF_MIRROR:-https://hf-mirror.com}
+      - HF_ENDPOINT=${HF_ENDPOINT:-https://hf-mirror.com}
+      - HUGGINGFACE_HUB_CACHE=/data
+      - HF_HOME=/data
+      - TRANSFORMERS_CACHE=/data
+    ports:
+      - "8080:80"
+    networks:
+      - rag_network
+    volumes:
+      - embedding_cache:/data
+    command: 
+      - "--model-id"
+      - "BAAI/bge-small-en-v1.5"
+      - "--revision"
+      - "main"
+      - "--max-concurrent-requests"
+      - "32"
+      - "--max-batch-tokens"
+      - "4096"
+      - "--port"
+      - "80"
+      - "--hostname"
+      - "0.0.0.0"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:80/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 180s
+    deploy:
+      resources:
+        limits:
+          memory: 1.5g
+        reservations:
+          memory: 512m
+
+volumes:
+  elasticsearch_data:
+    driver: local
+  embedding_cache:
+    driver: local
+
+networks:
+  rag_network:
+    driver: bridge
