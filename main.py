@@ -89,7 +89,25 @@ def main():
                 print(f"\n{i}. {result['filename']} (Score: {result['score']:.4f})")
                 if 'rrf_score' in result:
                     print(f"   RRF Score: {result['rrf_score']:.6f}")
-                print(f"   {result['content'][:200]}...")
+                
+                # Show highlights if available
+                if result.get('highlights'):
+                    print("   📝 Highlights:")
+                    for highlight in result['highlights'][:2]:  # Show top 2 highlights
+                        print(f"      {highlight}")
+                
+                # Show relevant chunks
+                if result.get('relevant_chunks'):
+                    print("   📄 Relevant chunks:")
+                    for j, chunk in enumerate(result['relevant_chunks'][:2], 1):
+                        chunk_preview = chunk[:150] + "..." if len(chunk) > 150 else chunk
+                        print(f"      {j}. {chunk_preview}")
+                else:
+                    # Fallback to content preview
+                    print(f"   📄 Content: {result['content'][:200]}...")
+                
+                if result.get('title'):
+                    print(f"   📋 Title: {result['title']}")
         except Exception as e:
             print(f"Error searching: {e}")
     
@@ -117,7 +135,26 @@ def main():
                 print(f"\n{i}. {result['filename']} (Score: {result['score']:.4f})")
                 if 'rrf_score' in result:
                     print(f"   RRF Score: {result['rrf_score']:.6f}")
-                print(f"   {result['content'][:200]}...")
+                
+                # Show highlights if available
+                if result.get('highlights'):
+                    print("   📝 Highlights:")
+                    for highlight in result['highlights'][:2]:
+                        print(f"      {highlight}")
+                
+                # Show relevant chunks with more detail for advanced search
+                if result.get('relevant_chunks'):
+                    print("   📄 Relevant chunks:")
+                    for j, chunk in enumerate(result['relevant_chunks'][:3], 1):
+                        chunk_preview = chunk[:200] + "..." if len(chunk) > 200 else chunk
+                        print(f"      {j}. {chunk_preview}")
+                else:
+                    print(f"   📄 Content: {result['content'][:250]}...")
+                
+                if result.get('title'):
+                    print(f"   📋 Title: {result['title']}")
+                if result.get('content_type'):
+                    print(f"   📄 Type: {result['content_type']}")
         except Exception as e:
             print(f"Error in advanced search: {e}")
     

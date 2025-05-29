@@ -9,25 +9,33 @@ class SearchEngine:
         """Search using basic features compatible with basic license"""
         search_results = []
         
-        # BM25 search
+        # BM25 search - now searches within chunks
         bm25_search = {
             "query": {
-                "multi_match": {
-                    "query": query,
-                    "fields": ["attachment.content^2", "attachment.title", "filename"]
+                "nested": {
+                    "path": "chunks",
+                    "query": {
+                        "multi_match": {
+                            "query": query,
+                            "fields": ["chunks.content^2", "attachment.title", "filename"]
+                        }
+                    },
+                    "inner_hits": {
+                        "size": 3,
+                        "highlight": {
+                            "fields": {
+                                "chunks.content": {
+                                    "fragment_size": 150,
+                                    "number_of_fragments": 2
+                                }
+                            }
+                        }
+                    }
                 }
             },
             "size": size,
             "_source": {
-                "excludes": ["text_embedding"]
-            },
-            "highlight": {
-                "fields": {
-                    "attachment.content": {
-                        "fragment_size": 150,
-                        "number_of_fragments": 3
-                    }
-                }
+                "excludes": ["chunks.embedding"]
             }
         }
         
@@ -37,25 +45,34 @@ class SearchEngine:
         )
         search_results.append(("bm25", bm25_response))
         
-        # Vector search
+        # Vector search - now searches within chunk embeddings
         try:
             vector_search = {
                 "query": {
-                    "knn": {
-                        "field": "text_embedding",
-                        "query_vector_builder": {
-                            "text_embedding": {
-                                "model_id": INFERENCE_SERVICE_ID,
-                                "model_text": query
+                    "nested": {
+                        "path": "chunks",
+                        "query": {
+                            "knn": {
+                                "field": "chunks.embedding",
+                                "query_vector_builder": {
+                                    "text_embedding": {
+                                        "model_id": INFERENCE_SERVICE_ID,
+                                        "model_text": query
+                                    }
+                                },
+                                "k": size,
+                                "num_candidates": size * 5
                             }
                         },
-                        "k": size,
-                        "num_candidates": size * 5
+                        "inner_hits": {
+                            "size": 3,
+                            "_source": ["chunks.content"]
+                        }
                     }
                 },
                 "size": size,
                 "_source": {
-                    "excludes": ["text_embedding"]
+                    "excludes": ["chunks.embedding"]
                 }
             }
             
@@ -163,15 +180,23 @@ class SearchEngine:
         """
         fuzzy_search = {
             "query": {
-                "multi_match": {
-                    "query": query,
-                    "fields": ["attachment.content", "attachment.title", "filename"],
-                    "fuzziness": "AUTO"
+                "nested": {
+                    "path": "chunks",
+                    "query": {
+                        "multi_match": {
+                            "query": query,
+                            "fields": ["chunks.content", "attachment.title", "filename"],
+                            "fuzziness": "AUTO"
+                        }
+                    },
+                    "inner_hits": {
+                        "size": 3
+                    }
                 }
             },
             "size": size,
             "_source": {
-                "excludes": ["text_embedding"]
+                "excludes": ["chunks.embedding"]
             }
         }
         
@@ -186,15 +211,23 @@ class SearchEngine:
         """
         phrase_search = {
             "query": {
-                "multi_match": {
-                    "query": query,
-                    "fields": ["attachment.content", "attachment.title"],
-                    "type": "phrase"
+                "nested": {
+                    "path": "chunks",
+                    "query": {
+                        "multi_match": {
+                            "query": query,
+                            "fields": ["chunks.content", "attachment.title"],
+                            "type": "phrase"
+                        }
+                    },
+                    "inner_hits": {
+                        "size": 3
+                    }
                 }
             },
             "size": size,
             "_source": {
-                "excludes": ["text_embedding"]
+                "excludes": ["chunks.embedding"]
             }
         }
         
@@ -218,21 +251,29 @@ class SearchEngine:
         # Always include BM25
         bm25_search = {
             "query": {
-                "multi_match": {
-                    "query": query,
-                    "fields": ["attachment.content^2", "attachment.title", "filename"]
+                "nested": {
+                    "path": "chunks",
+                    "query": {
+                        "multi_match": {
+                            "query": query,
+                            "fields": ["chunks.content^2", "attachment.title", "filename"]
+                        }
+                    },
+                    "inner_hits": {
+                        "size": 3,
+                        "highlight": {
+                            "fields": {
+                                "chunks.content": {
+                                    "fragment_size": 150,
+                                    "number_of_fragments": 2
+                                }
+                            }
+                        }
+                    }
                 }
             },
             "size": size,
-            "_source": {"excludes": ["text_embedding"]},
-            "highlight": {
-                "fields": {
-                    "attachment.content": {
-                        "fragment_size": 150,
-                        "number_of_fragments": 3
-                    }
-                }
-            }
+            "_source": {"excludes": ["chunks.embedding"]}
         }
         
         bm25_response = self.es_client.client.search(index=INDEX_NAME, body=bm25_search)
@@ -273,20 +314,29 @@ class SearchEngine:
         """Separate vector search method"""
         vector_search = {
             "query": {
-                "knn": {
-                    "field": "text_embedding",
-                    "query_vector_builder": {
-                        "text_embedding": {
-                            "model_id": INFERENCE_SERVICE_ID,
-                            "model_text": query
+                "nested": {
+                    "path": "chunks",
+                    "query": {
+                        "knn": {
+                            "field": "chunks.embedding",
+                            "query_vector_builder": {
+                                "text_embedding": {
+                                    "model_id": INFERENCE_SERVICE_ID,
+                                    "model_text": query
+                                }
+                            },
+                            "k": size,
+                            "num_candidates": size * 5
                         }
                     },
-                    "k": size,
-                    "num_candidates": size * 5
+                    "inner_hits": {
+                        "size": 3,
+                        "_source": ["chunks.content"]
+                    }
                 }
             },
             "size": size,
-            "_source": {"excludes": ["text_embedding"]}
+            "_source": {"excludes": ["chunks.embedding"]}
         }
         
         return self.es_client.client.search(index=INDEX_NAME, body=vector_search)
@@ -295,15 +345,34 @@ class SearchEngine:
         """Format search results"""
         results = []
         for hit in response['hits']['hits']:
+            # Extract relevant chunk information from inner_hits
+            relevant_chunks = []
+            highlights = []
+            
+            if 'inner_hits' in hit and 'chunks' in hit['inner_hits']:
+                for inner_hit in hit['inner_hits']['chunks']['hits']['hits']:
+                    chunk_content = inner_hit['_source'].get('content', '')
+                    relevant_chunks.append(chunk_content)
+                    
+                    # Extract highlights if available
+                    if 'highlight' in inner_hit:
+                        chunk_highlights = inner_hit['highlight'].get('chunks.content', [])
+                        highlights.extend(chunk_highlights)
+            
+            # Fallback to original content if no chunks found
+            content = ' ... '.join(relevant_chunks) if relevant_chunks else hit['_source']['attachment']['content'][:500] + '...'
+            
             result = {
                 'id': hit['_id'],
                 'score': hit['_score'],
                 'filename': hit['_source'].get('filename'),
-                'content': hit['_source']['attachment']['content'][:500] + '...' if len(hit['_source']['attachment']['content']) > 500 else hit['_source']['attachment']['content'],
+                'content': content,
                 'title': hit['_source']['attachment'].get('title', ''),
                 'content_type': hit['_source']['attachment'].get('content_type', ''),
-                'highlights': hit.get('highlight', {}).get('attachment.content', [])
+                'highlights': highlights,
+                'relevant_chunks': relevant_chunks[:3]  # Show top 3 relevant chunks
             }
+            
             # Include RRF score if available
             if '_rrf_score' in hit:
                 result['rrf_score'] = hit['_rrf_score']

@@ -27,42 +27,68 @@ class ElasticsearchClient:
                 task_type="text_embedding"
             )
         except Exception as e:
-            logging.exception(e)
             # Service might already exist
             print(f"Inference service creation: {e}")
             return None
     
+    def get_chunking_script(self, chunk_size=1000, overlap=200):
+        """Get the Painless script for text chunking"""
+        return """
+            if (ctx.attachment?.content != null) {
+                def content = ctx.attachment.content;
+                def chunks = [];
+                int chunkSize = """ + str(chunk_size) + """;
+                int overlap = """ + str(overlap) + """;
+                int start = 0;
+                
+                // Ensure overlap is not larger than chunk size
+                if (overlap >= chunkSize) {
+                    overlap = chunkSize / 2;
+                }
+                
+                while (start < content.length()) {
+                    int end = (int)Math.min(start + chunkSize, content.length());
+                    
+                    // Only create chunk if there's content
+                    if (start < content.length()) {
+                        def chunk = content.substring(start, end);
+                        def chunkMap = ['content': chunk];
+                        chunks.add(chunkMap);
+                    }
+                    
+                    // Calculate next start position, ensuring it doesn't go backwards
+                    int nextStart = start + chunkSize - overlap;
+                    if (nextStart <= start) {
+                        nextStart = start + 1;
+                    }
+                    start = nextStart;
+                    
+                    // Prevent infinite loop
+                    if (end >= content.length()) {
+                        break;
+                    }
+                }
+                ctx.chunks = chunks;
+            } else {
+                ctx.chunks = [];
+            }
+        """
+
     def test_painless_script(self):
         """Test painless script syntax"""
-        try:
-            # Test chunking script with map structure like the final version
+        try:            
             test_pipeline = {
                 "processors": [
                     {
                         "script": {
                             "lang": "painless",
-                            "source": """
-                                def content = "This is a test content that we want to split into chunks. It should be long enough to test the chunking logic properly.";
-                                def chunks = [];
-                                int chunkSize = 50;
-                                int overlap = 10;
-                                int start = 0;
-                                
-                                while (start < content.length()) {
-                                    int end = (int)Math.min(start + chunkSize, content.length());
-                                    def chunk = content.substring(start, end);
-                                    def chunkMap = ['content': chunk];
-                                    chunks.add(chunkMap);
-                                    start += (chunkSize - overlap);
-                                }
-                                ctx.chunks = chunks;
-                            """
+                            "source": self.get_chunking_script(50, 10)
                         }
                     }
                 ]
             }
             
-            test_doc = {"_source": {"test_field": "test value"}}
+            test_doc = {"_source": {"attachment": {"content": "This is a test content that should be chunked properly without errors."}}}
             
             result = self.client.ingest.simulate(
                 body={
@@ -92,26 +118,7 @@ class ElasticsearchClient:
                 {
                     "script": {
                         "lang": "painless",
-                        "source": """
-                            if (ctx.attachment?.content != null) {
-                                def content = ctx.attachment.content;
-                                def chunks = [];
-                                int chunkSize = 1000;
-                                int overlap = 200;
-                                int start = 0;
-                                
-                                while (start < content.length()) {
-                                    int end = (int)Math.min(start + chunkSize, content.length());
-                                    def chunk = content.substring(start, end);
-                                    def chunkMap = ['content': chunk];
-                                    chunks.add(chunkMap);
-                                    start += (chunkSize - overlap);
-                                }
-                                ctx.chunks = chunks;
-                            } else {
-                                ctx.chunks = [];
-                            }
-                        """
+                        "source": self.get_chunking_script()
                     }
                 },
                 {
@@ -129,6 +136,18 @@ class ElasticsearchClient:
                         "ignore_missing": True
                     }
                 },
+                {
+                    "foreach": {
+                        "field": "chunks",
+                        "processor": {
+                            "remove": {
+                                "field": "_ingest._value.model_id",
+                                "ignore_missing": True
+                            }
+                        },
+                        "ignore_missing": True
+                    }
+                }
             ]
         }
         
@@ -190,14 +209,14 @@ class ElasticsearchClient:
             return None
 
     def setup(self, force_recreate_index=False):
+        print("Testing painless script...")
+        self.test_painless_script()
+        
         """Setup inference service, pipeline and index"""
         print("Creating inference service...")
         self.create_inference_service()
-        print("Testing painless script...")
-        self.test_painless_script()
         print("Creating pipeline...")
         self.create_pipeline()
-        
         if force_recreate_index:
             print("Deleting existing index...")
             self.delete_index()
