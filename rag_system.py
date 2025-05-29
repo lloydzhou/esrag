@@ -11,7 +11,7 @@ class RAGSystem:
     def setup(self):
         """Initialize the RAG system"""
         print("Setting up RAG system...")
-        self.es_client.setup()
+        self.es_client.setup(True)
         print("RAG system setup complete!")
     
     def add_document(self, file_path, filename=None):

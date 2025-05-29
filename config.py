@@ -10,8 +10,8 @@ ES_PASSWORD = os.getenv('ES_PASSWORD', 'changeme')
 HF_MIRROR = os.getenv('HF_MIRROR', 'https://hf-mirror.com')
 
 # Index configuration
-INDEX_NAME = 'knowledge_base'
-PIPELINE_NAME = 'attachment_embedding_pipeline'
+INDEX_NAME = 'knowledge_base1'
+PIPELINE_NAME = 'attachment_embedding_pipeline1'
 
 # Text embedding inference service - using a smaller, more reliable model
 INFERENCE_SERVICE_ID = 'text_embedding_service1'
