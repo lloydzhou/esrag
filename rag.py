@@ -25,12 +25,26 @@ class Client:
         self._inferences = {}
         self._user = None
         self._init_scripts()
+
+    def add_user(self, username: str, api_key: str, metadata: Optional[Dict] = None) -> bool:
+        """添加或更新用户凭据"""
+        user = User(self, username, api_key)
+        return user.create_or_update(metadata)
+
+    def delete_user(self, username: str) -> bool:
+        """删除用户凭据"""
+        user = User(self, username, "")
+        return user.delete()
         
     def authenticate(self, username: str, api_key: str) -> 'User':
         """用户认证"""
-        self._user = User(self, username, api_key)
-        return self._user
-        
+        user = User(self, username, api_key)
+        if user.validate():
+            self._user = user
+            return self._user
+        else:
+            raise ValueError(f"用户认证失败: {username}")
+    
     def get_collection(self, name: str, inference_config: Optional[Dict] = None) -> 'Collection':
         """获取或创建集合（知识库）"""
         if not self._user:
@@ -71,6 +85,9 @@ class Client:
         return self._inferences[model_id]
     
     def _init_scripts(self):
+        if self.client.get_script(id="text_splitter", ignore=[404]):
+            logging.debug("文本分片脚本已存在")
+            return
         """初始化ES脚本"""
         script_source = """
             if (ctx.attachment?.content != null) {
@@ -112,7 +129,7 @@ class Client:
                     }
                 }
             )
-            logging.info("文本分片脚本初始化成功")
+            logging.debug("文本分片脚本初始化成功")
         except Exception as e:
             logging.warning(f"脚本初始化失败: {e}")
     
@@ -122,7 +139,7 @@ class Client:
             response = self.client.cat.plugins(format="json")
             for plugin in response:
                 if 'analysis-ik' in plugin.get('component', ''):
-                    logging.info("analysis-ik插件已安装")
+                    logging.debug("analysis-ik插件已安装")
                     return True
             logging.warning("analysis-ik插件未安装")
             return False
@@ -134,17 +151,202 @@ class Client:
 class User:
     """用户管理"""
     
-    def __init__(self, client: Client, username: str, api_key: str):
+    def __init__(self, client: Client, username: str, api_key: str, auth_index: str = "user_auth"):
         self.client = client
         self.username = username
         self.api_key = api_key
-        self._verify_user()
+        self.auth_index = auth_index
     
-    def _verify_user(self):
+    @staticmethod
+    def init_auth_index(es_client: Elasticsearch, auth_index: str):
+        """初始化用户认证索引"""
+        if es_client.indices.exists(index=auth_index):
+            return
+        
+        mapping = {
+            "mappings": {
+                "properties": {
+                    "username": {
+                        "type": "keyword"
+                    },
+                    "api_key": {
+                        "type": "keyword"
+                    },
+                    "created_at": {
+                        "type": "date"
+                    },
+                    "last_login": {
+                        "type": "date"
+                    },
+                    "metadata": {
+                        "type": "object",
+                        "enabled": False
+                    }
+                }
+            },
+            "settings": {
+                "index": {
+                    "number_of_replicas": 0,
+                }
+            }
+        }
+        
+        try:
+            es_client.indices.create(index=auth_index, body=mapping)
+            logging.debug(f"创建用户认证索引成功: {auth_index}")
+        except Exception as e:
+            logging.error(f"创建用户认证索引失败: {e}")
+            raise
+    
+    def create_or_update(self, metadata: Optional[Dict] = None) -> bool:
+        """创建或更新用户凭据"""
+        try:
+            User.init_auth_index(self.client.client, self.auth_index)
+            from datetime import datetime
+            doc_data = {
+                "username": self.username,
+                "api_key": self.api_key,
+                "created_at": datetime.now().isoformat(),
+                "metadata": metadata or {}
+            }
+            
+            response = self.client.client.index(
+                index=self.auth_index,
+                id=self.username,  # 使用username作为文档ID
+                body=doc_data,
+                refresh='wait_for'
+            )
+            logging.debug(f"用户 {self.username} 添加成功")
+            return True
+        except Exception as e:
+            logging.error(f"添加用户失败: {e}")
+            return False
+    
+    def validate(self) -> bool:
         """验证用户凭据"""
-        # 简化实现，实际项目中需要更完善的认证
-        if not self.username or not self.api_key:
-            raise ValueError("用户名和API密钥不能为空")
+        try:
+            response = self.client.client.get(
+                index=self.auth_index,
+                id=self.username
+            )
+            stored_api_key = response['_source'].get('api_key')
+            
+            if stored_api_key == self.api_key:
+                # 更新最后登录时间
+                self._update_last_login()
+                return True
+            else:
+                logging.warning(f"用户 {self.username} API密钥验证失败")
+                return False
+                
+        except NotFoundError:
+            logging.warning(f"用户 {self.username} 不存在")
+            return False
+        except Exception as e:
+            logging.error(f"验证用户失败: {e}")
+            return False
+    
+    def _update_last_login(self):
+        """更新最后登录时间"""
+        try:
+            from datetime import datetime
+            self.client.client.update(
+                index=self.auth_index,
+                id=self.username,
+                body={
+                    "doc": {
+                        "last_login": datetime.now().isoformat()
+                    }
+                },
+                refresh='wait_for'
+            )
+        except Exception as e:
+            logging.warning(f"更新登录时间失败: {e}")
+    
+    def delete(self) -> bool:
+        """删除用户"""
+        try:
+            self.client.client.delete(
+                index=self.auth_index,
+                id=self.username,
+                refresh='wait_for'
+            )
+            logging.debug(f"用户 {self.username} 删除成功")
+            return True
+        except NotFoundError:
+            logging.warning(f"用户 {self.username} 不存在")
+            return False
+        except Exception as e:
+            logging.error(f"删除用户失败: {e}")
+            return False
+    
+    def get_info(self) -> Optional[Dict]:
+        """获取用户信息"""
+        try:
+            response = self.client.client.get(
+                index=self.auth_index,
+                id=self.username
+            )
+            user_info = response['_source'].copy()
+            # 不返回API密钥
+            user_info.pop('api_key', None)
+            return user_info
+        except NotFoundError:
+            return None
+        except Exception as e:
+            logging.error(f"获取用户信息失败: {e}")
+            return None
+    
+    def update_metadata(self, metadata: Dict) -> bool:
+        """更新用户元数据"""
+        try:
+            self.client.client.update(
+                index=self.auth_index,
+                id=self.username,
+                body={
+                    "doc": {
+                        "metadata": metadata
+                    }
+                },
+                refresh='wait_for'
+            )
+            logging.debug(f"用户 {self.username} 元数据更新成功")
+            return True
+        except Exception as e:
+            logging.error(f"更新用户元数据失败: {e}")
+            return False
+
+    @classmethod
+    def list_all_users(cls, es_client: Elasticsearch, auth_index: str, 
+                      offset: int = 0, limit: int = 10) -> Dict:
+        """列出所有用户（类方法，用于管理员功能）"""
+        try:
+            response = es_client.search(
+                index=auth_index,
+                body={
+                    "query": {"match_all": {}},
+                    "_source": ["username", "created_at", "last_login", "metadata"],
+                    "from": offset,
+                    "size": limit,
+                    "sort": [{"created_at": {"order": "desc"}}]
+                }
+            )
+            
+            return {
+                "total": response['hits']['total']['value'],
+                "users": [
+                    {
+                        "username": hit['_source'].get('username', ''),
+                        "created_at": hit['_source'].get('created_at', ''),
+                        "last_login": hit['_source'].get('last_login', ''),
+                        "metadata": hit['_source'].get('metadata', {})
+                    }
+                    for hit in response['hits']['hits']
+                ]
+            }
+        except Exception as e:
+            logging.error(f"列出用户失败: {e}")
+            return {"total": 0, "users": []}
 
 
 class InferenceService:
@@ -166,7 +368,7 @@ class InferenceService:
         """初始化推理服务"""
         try:
             response = self.client.inference.get(inference_id=self.inference_id)
-            logging.info(f'推理服务已存在: {self.inference_id}')
+            logging.debug(f'推理服务已存在: {self.inference_id}')
         except NotFoundError:
             try:
                 response = self.client.inference.put(
@@ -177,7 +379,7 @@ class InferenceService:
                         "service_settings": self.config.get("service_settings", {})
                     }
                 )
-                logging.info(f'创建推理服务成功: {self.inference_id}')
+                logging.debug(f'创建推理服务成功: {self.inference_id}')
             except Exception as e:
                 logging.error(f"创建推理服务失败: {e}")
                 raise
@@ -276,7 +478,7 @@ class Collection:
         
         try:
             self.client.client.indices.create(index=self.index_name, body=mapping)
-            logging.info(f"创建索引成功: {self.index_name}")
+            logging.debug(f"创建索引成功: {self.index_name}")
         except Exception as e:
             logging.error(f"创建索引失败: {e}")
             raise
@@ -285,7 +487,7 @@ class Collection:
         """初始化处理pipeline"""
         try:
             self.client.client.ingest.get_pipeline(id=self.pipeline_id)
-            logging.info(f'Pipeline已存在: {self.pipeline_id}')
+            logging.debug(f'Pipeline已存在: {self.pipeline_id}')
             return
         except NotFoundError:
             pass
@@ -361,7 +563,7 @@ class Collection:
                     "processors": processors
                 }
             )
-            logging.info(f'创建Pipeline成功: {self.pipeline_id}')
+            logging.debug(f'创建Pipeline成功: {self.pipeline_id}')
         except Exception as e:
             logging.error(f"创建Pipeline失败: {e}")
             raise
@@ -624,11 +826,11 @@ class Collection:
         try:
             if self.client.client.indices.exists(index=self.index_name):
                 self.client.client.indices.delete(index=self.index_name)
-                logging.info(f"删除索引成功: {self.index_name}")
+                logging.debug(f"删除索引成功: {self.index_name}")
             
             try:
                 self.client.client.ingest.delete_pipeline(id=self.pipeline_id)
-                logging.info(f"删除Pipeline成功: {self.pipeline_id}")
+                logging.debug(f"删除Pipeline成功: {self.pipeline_id}")
             except NotFoundError:
                 pass
         except Exception as e:
@@ -647,63 +849,128 @@ def rrf(*queries, k: int = 60) -> List[tuple]:
     return sorted(result.items(), key=lambda kv: kv[1], reverse=True)
 
 
-# 使用示例
+# 命令行参数处理
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
+    import sys
+    import os
+    import asyncio
+
+    def usage():
+        print("Usage:")
+        print("  python rag.py setup")
+        print("  python rag.py add <file_path>")
+        print("  python rag.py search <query>")
+        sys.exit(1)
+    
+    if len(sys.argv) < 2:
+        usage()
+    
+    command = sys.argv[1]
     
     async def main():
         # 创建客户端
         client = Client('http://0.0.0.0:9200')
         
-        # 检查IK插件
-        if not client.check_ik_plugin():
-            print("警告: analysis-ik插件未安装，中文分词功能可能不可用")
-            print("安装命令: elasticsearch-plugin install https://github.com/medcl/elasticsearch-analysis-ik/releases/download/v8.11.0/elasticsearch-analysis-ik-8.11.0.zip")
-
-        # 用户认证
-        user = client.authenticate('test_user', 'test_api_key')
-        
-        # 创建推理服务配置
-        inference_config = {
-            "model_id": "bge-small-en-v1.5",
-            "service": "hugging_face",
-            "service_settings": {
-                "api_key": "placeholder",
-                "url": "http://192.168.10.12:8080/embed",
-            },
-            "embedding_dims": 384
-        }
-        
-        # 获取集合
-        collection = client.get_collection('test_documents3', inference_config)
-        
-        # 添加文档
-        try:
-            with open(__file__, 'rb') as f:
-                response = collection.add(
-                    document_id='doc1',
-                    name='Python RAG代码',
-                    file_content=f.read(),
-                    metadata={'category': 'code', 'language': 'python'}
+        if command == "setup":
+            # 初始化设置
+            if not client.check_ik_plugin():
+                print("警告: analysis-ik插件未安装，中文分词功能可能不可用")
+                print("安装命令: elasticsearch-plugin install https://github.com/medcl/elasticsearch-analysis-ik/releases/download/v8.11.0/elasticsearch-analysis-ik-8.11.0.zip")
+            
+            # 初始化用户
+            success = client.add_user('test_user', 'test_api_key', metadata={
+                "email": "test@test.com",
+                "role": "admin",
+                "preferences": {
+                    "language": "zh",
+                    "theme": "dark"
+                }
+            })
+            if success:
+                print("用户初始化成功")
+            else:
+                print("用户初始化失败")
+                
+                
+        elif command == "add" and len(sys.argv) >= 3:
+            # 添加文档
+            file_path = sys.argv[2]
+            if not os.path.exists(file_path):
+                print(f"文件不存在: {file_path}")
+                return
+                
+            # 用户认证
+            user = client.authenticate('test_user', 'test_api_key')
+            
+            # 创建推理服务配置
+            inference_config = {
+                "model_id": "bge-small-en-v1.5",
+                "service": "hugging_face",
+                "service_settings": {
+                    "api_key": "placeholder",
+                    "url": "http://192.168.10.12:8080/embed",
+                },
+                "embedding_dims": 384
+            }
+            
+            # 获取集合
+            collection = client.get_collection('test_documents', inference_config)
+            
+            # 添加文档
+            try:
+                with open(file_path, 'rb') as f:
+                    file_name = os.path.basename(file_path)
+                    doc_id = f"doc_{hash(file_path) % 1000000}"
+                    response = collection.add(
+                        document_id=doc_id,
+                        name=file_name,
+                        file_content=f.read(),
+                        metadata={'source': file_path, 'type': 'file'}
+                    )
+                    print(f"添加文档成功: {file_name}")
+            except Exception as e:
+                print(f"添加文档失败: {e}")
+                
+        elif command == "search" and len(sys.argv) >= 3:
+            # 搜索文档
+            query = " ".join(sys.argv[2:])
+            
+            # 用户认证
+            user = client.authenticate('test_user', 'test_api_key')
+            
+            # 创建推理服务配置
+            inference_config = {
+                "model_id": "bge-small-en-v1.5",
+                "service": "hugging_face",
+                "service_settings": {
+                    "api_key": "placeholder",
+                    "url": "http://192.168.10.12:8080/embed",
+                },
+                "embedding_dims": 384
+            }
+            
+            # 获取集合
+            collection = client.get_collection('test_documents', inference_config)
+            
+            # 查询文档
+            try:
+                results = await collection.query(
+                    query_text=query,
+                    size=5
                 )
-                print(f"添加文档成功: {response}")
-        except Exception as e:
-            print(f"添加文档失败: {e}")
-        
-        # 查询文档
-        try:
-            results = await collection.query(
-                query_text="RAG系统",
-                metadata_filter={'category': 'code'},
-                size=3
-            )
-            print(f"查询结果数量: {len(results)}")
-            for result in results:
-                print(f"文档: {result['document_name']}")
-                print(f"内容: {result['chunk_content'][:100]}...")
-                print(f"分数: {result['score']}")
-                print("---")
-        except Exception as e:
-            print(f"查询失败: {e}")
+                print(f"查询 '{query}' 的结果 ({len(results)} 个):")
+                print("=" * 50)
+                for i, result in enumerate(results, 1):
+                    print(f"{i}. 文档: {result['document_name']}")
+                    print(f"   内容: {result['chunk_content'][:200]}...")
+                    print(f"   分数: {result.get('final_score', result['score']):.4f}")
+                    print("-" * 30)
+            except Exception as e:
+                print(f"查询失败: {e}")
+                
+        else:
+            print("无效的命令或参数")
+            usage()
     
     asyncio.run(main())
