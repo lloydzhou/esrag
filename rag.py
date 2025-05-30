@@ -7,15 +7,15 @@ from elasticsearch import Elasticsearch, AsyncElasticsearch, NotFoundError
 
 
 class Client:
-    """RAG系统的主要客户端，管理ES连接和全局配置"""
+    """Main client for the RAG system, managing ES connections and global configurations"""
     
     def __init__(self, hosts: Union[str, List[str]], **kwargs):
         """
-        初始化客户端
+        Initialize the client
         
         Args:
-            hosts: Elasticsearch主机地址
-            **kwargs: 其他ES连接参数
+            hosts: Elasticsearch host addresses
+            **kwargs: Other ES connection parameters
         """
         self.hosts = hosts if isinstance(hosts, list) else [hosts]
         self.client = Elasticsearch(self.hosts, **kwargs)
@@ -27,26 +27,26 @@ class Client:
         self._load_existing_models()
 
     def add_user(self, username: str, api_key: str, metadata: Optional[Dict] = None) -> bool:
-        """添加或更新用户凭据"""
+        """Add or update user credentials"""
         user = User(self, username, api_key)
         return user.create_or_update(metadata)
 
     def delete_user(self, username: str) -> bool:
-        """删除用户凭据"""
+        """Delete user credentials"""
         user = User(self, username, "")
         return user.delete()
         
     def authenticate(self, username: str, api_key: str) -> 'User':
-        """用户认证"""
+        """Authenticate user"""
         user = User(self, username, api_key)
         if user.validate():
             self._user = user
             return self._user
         else:
-            raise ValueError(f"用户认证失败: {username}")
+            raise ValueError(f"User authentication failed: {username}")
     
     def register_model(self, model_id: str, config: Dict) -> 'Model':
-        """注册预定义模型"""
+        """Register a predefined model"""
         model = Model(
             client=self.client,
             model_id=model_id,
@@ -56,11 +56,11 @@ class Client:
         return model
 
     def get_model(self, model_id: str, service_config: Optional[Dict] = None) -> 'Model':
-        """获取或创建模型"""
-        print(f"获取模型配置: {model_id}, {service_config}")
+        """Get or create a model"""
+        logging.debug(f"Getting model configuration: {model_id}, {service_config}")
         if model_id not in self._predefined_models:
             if not service_config:
-                raise ValueError(f"模型 {model_id} 未预定义，需要提供 service_config")
+                raise ValueError(f"Model {model_id} is not predefined, service_config is required")
             self._predefined_models[model_id] = Model(
                 client=self.client,
                 model_id=model_id,
@@ -69,7 +69,7 @@ class Client:
         return self._predefined_models[model_id]
 
     def list_models(self) -> List[Dict]:
-        """列出可用模型"""
+        """List available models"""
         return [
             {
                 "model_id": model_id,
@@ -80,11 +80,11 @@ class Client:
         ]
 
     def get_collection(self, name: str, model_id: Optional[str] = None) -> 'Collection':
-        """获取或创建集合（知识库）"""
+        """Get or create a collection (knowledge base)"""
         if not self._user:
-            raise ValueError("请先调用 authenticate() 进行用户认证")
+            raise ValueError("Please call authenticate() to authenticate the user first")
         
-        # 如果指定了model_id，使用该模型；否则使用默认模型
+        # If model_id is specified, use that model; otherwise, use the default model
         if model_id:
             model = self.get_model(model_id)
             collection_key = f"{model_id}__{self._user.username}__{name}"
@@ -102,21 +102,21 @@ class Client:
         return self._collections[collection_key]
     
     def list_collections(self) -> List[str]:
-        """列出用户的所有集合"""
+        """List all collections of the user"""
         if not self._user:
-            raise ValueError("请先调用 authenticate() 进行用户认证")
+            raise ValueError("Please call authenticate() to authenticate the user first")
         
         try:
             pattern = f"*__{self._user.username}__*"
             response = self.client.cat.indices(index=pattern, format='json', ignore=[404])
-            print(f"列出集合: {response}")
+            logging.debug(f"Listing collections: {response}")
             if response:
-                # 支持新的索引命名格式：{model_id}__{username}__{collection_name}
+                # Support new index naming format: {model_id}__{username}__{collection_name}
                 prefix = f"{self._user.username}__"
                 collections = []
                 for idx in response:
                     if prefix in idx['index']:
-                        # 解析索引名：{model_id}__{username}__{collection_name} 或 {username}__{collection_name}
+                        # Parse index name: {model_id}__{username}__{collection_name} or {username}__{collection_name}
                         index_parts = idx['index'].replace(prefix, "").split("__")
                         if len(index_parts) == 2:
                             model_id, collection_name = index_parts
@@ -139,15 +139,15 @@ class Client:
             return []
 
     def _load_existing_models(self):
-        """从ES加载所有已存在的模型推理服务配置"""
+        """Load all existing model inference service configurations from ES"""
         try:
-            # 获取所有推理服务
+            # Get all inference services
             response = self.client.inference.get()
             for config in response.get('endpoints', {}):
                 inference_id = config.get('inference_id', '')
                 if inference_id.endswith('__inference'):
                     model_id = inference_id.replace('__inference', '')
-                    # 如果不在预定义模型中，从配置重建
+                    # If not in predefined models, rebuild from configuration
                     if model_id not in self._predefined_models:
                         service_config = {
                             "service": config.get('service', 'openai'),
@@ -159,18 +159,18 @@ class Client:
                             model_id=model_id,
                             config=service_config
                         )
-                        # 标记为已存在，避免重复初始化
+                        # Mark as existing to avoid repeated initialization
                         model._exists = True
                         self._predefined_models[model_id] = model
-            logging.debug(f"加载了 {len(self._predefined_models)} 个模型")
+            logging.debug(f"Loaded {len(self._predefined_models)} models")
         except Exception as e:
-            logging.warning(f"加载已存在的模型失败: {e}")
+            logging.warning(f"Failed to load existing models: {e}")
 
     def _init_scripts(self):
         if self.client.get_script(id="text_splitter", ignore=[404]):
-            logging.debug("文本分片脚本已存在")
+            logging.debug("Text splitting script already exists")
             return
-        """初始化ES脚本"""
+        """Initialize ES script"""
         script_source = """
             if (ctx.attachment?.content != null) {
                 def content = ctx.attachment.content;
@@ -211,13 +211,13 @@ class Client:
                     }
                 }
             )
-            logging.debug("文本分片脚本初始化成功")
+            logging.debug("Text splitting script initialized successfully")
         except Exception as e:
-            logging.warning(f"脚本初始化失败: {e}")
+            logging.warning(f"Script initialization failed: {e}")
 
 
 class User:
-    """用户管理"""
+    """User management"""
     
     def __init__(self, client: Client, username: str, api_key: str, auth_index: str = "user_auth"):
         self.client = client
@@ -227,7 +227,7 @@ class User:
     
     @staticmethod
     def init_auth_index(es_client: Elasticsearch, auth_index: str):
-        """初始化用户认证索引"""
+        """Initialize user authentication index"""
         if es_client.indices.exists(index=auth_index):
             return
         
@@ -261,13 +261,13 @@ class User:
         
         try:
             es_client.indices.create(index=auth_index, body=mapping)
-            logging.debug(f"创建用户认证索引成功: {auth_index}")
+            logging.debug(f"Created user authentication index successfully: {auth_index}")
         except Exception as e:
-            logging.error(f"创建用户认证索引失败: {e}")
+            logging.error(f"Failed to create user authentication index: {e}")
             raise
     
     def create_or_update(self, metadata: Optional[Dict] = None) -> bool:
-        """创建或更新用户凭据"""
+        """Create or update user credentials"""
         try:
             User.init_auth_index(self.client.client, self.auth_index)
             from datetime import datetime
@@ -280,18 +280,18 @@ class User:
             
             response = self.client.client.index(
                 index=self.auth_index,
-                id=self.username,  # 使用username作为文档ID
+                id=self.username,  # Use username as document ID
                 body=doc_data,
                 refresh='wait_for'
             )
-            logging.debug(f"用户 {self.username} 添加成功")
+            logging.debug(f"User {self.username} added successfully")
             return True
         except Exception as e:
-            logging.error(f"添加用户失败: {e}")
+            logging.error(f"Failed to add user: {e}")
             return False
     
     def validate(self) -> bool:
-        """验证用户凭据"""
+        """Validate user credentials"""
         try:
             response = self.client.client.get(
                 index=self.auth_index,
@@ -300,22 +300,22 @@ class User:
             stored_api_key = response['_source'].get('api_key')
             
             if stored_api_key == self.api_key:
-                # 更新最后登录时间
+                # Update last login time
                 self._update_last_login()
                 return True
             else:
-                logging.warning(f"用户 {self.username} API密钥验证失败")
+                logging.warning(f"User {self.username} API key validation failed")
                 return False
                 
         except NotFoundError:
-            logging.warning(f"用户 {self.username} 不存在")
+            logging.warning(f"User {self.username} does not exist")
             return False
         except Exception as e:
-            logging.error(f"验证用户失败: {e}")
+            logging.error(f"Failed to validate user: {e}")
             return False
     
     def _update_last_login(self):
-        """更新最后登录时间"""
+        """Update last login time"""
         try:
             from datetime import datetime
             self.client.client.update(
@@ -329,44 +329,44 @@ class User:
                 refresh='wait_for'
             )
         except Exception as e:
-            logging.warning(f"更新登录时间失败: {e}")
+            logging.warning(f"Failed to update login time: {e}")
     
     def delete(self) -> bool:
-        """删除用户"""
+        """Delete user"""
         try:
             self.client.client.delete(
                 index=self.auth_index,
                 id=self.username,
                 refresh='wait_for'
             )
-            logging.debug(f"用户 {self.username} 删除成功")
+            logging.debug(f"User {self.username} deleted successfully")
             return True
         except NotFoundError:
-            logging.warning(f"用户 {self.username} 不存在")
+            logging.warning(f"User {self.username} does not exist")
             return False
         except Exception as e:
-            logging.error(f"删除用户失败: {e}")
+            logging.error(f"Failed to delete user: {e}")
             return False
     
     def get_info(self) -> Optional[Dict]:
-        """获取用户信息"""
+        """Get user information"""
         try:
             response = self.client.client.get(
                 index=self.auth_index,
                 id=self.username
             )
             user_info = response['_source'].copy()
-            # 不返回API密钥
+            # Do not return API key
             user_info.pop('api_key', None)
             return user_info
         except NotFoundError:
             return None
         except Exception as e:
-            logging.error(f"获取用户信息失败: {e}")
+            logging.error(f"Failed to get user information: {e}")
             return None
     
     def update_metadata(self, metadata: Dict) -> bool:
-        """更新用户元数据"""
+        """Update user metadata"""
         try:
             self.client.client.update(
                 index=self.auth_index,
@@ -378,16 +378,16 @@ class User:
                 },
                 refresh='wait_for'
             )
-            logging.debug(f"用户 {self.username} 元数据更新成功")
+            logging.debug(f"User {self.username} metadata updated successfully")
             return True
         except Exception as e:
-            logging.error(f"更新用户元数据失败: {e}")
+            logging.error(f"Failed to update user metadata: {e}")
             return False
 
     @classmethod
     def list_all_users(cls, es_client: Elasticsearch, auth_index: str, 
                       offset: int = 0, limit: int = 10) -> Dict:
-        """列出所有用户（类方法，用于管理员功能）"""
+        """List all users (class method for admin functionality)"""
         try:
             response = es_client.search(
                 index=auth_index,
@@ -413,12 +413,12 @@ class User:
                 ]
             }
         except Exception as e:
-            logging.error(f"列出用户失败: {e}")
+            logging.error(f"Failed to list users: {e}")
             return {"total": 0, "users": []}
 
 
 class Model:
-    """模型管理，负责推理服务、pipeline和index template"""
+    """Model management, responsible for inference service, pipeline, and index template"""
     
     def __init__(self, client: Elasticsearch, model_id: str, config: Dict):
         self.client = client
@@ -429,24 +429,24 @@ class Model:
         self.template_name = f"{model_id}__template"
         self._exists = False
         
-        # 初始化模型的三个组件
+        # Initialize the three components of the model
         self._init_inference()
         self._create_model_pipeline()
         self._create_index_template()
     
     def get_dimensions(self) -> int:
-        """获取嵌入向量的维度"""
+        """Get the dimensions of the embedding vector"""
         return self.config.get("dimensions", 384)
     
     def _init_inference(self):
-        """初始化推理服务"""
+        """Initialize inference service"""
         if self._exists:
             return
         try:
             # self.client.inference.delete(inference_id=self.inference_id, ignore=[404], force=True)
             # raise NotFoundError("", None, None)
             response = self.client.inference.get(inference_id=self.inference_id)
-            logging.debug(f'推理服务已存在: {self.inference_id}')
+            logging.debug(f'Inference service already exists: {self.inference_id}')
         except NotFoundError:
             try:
                 response = self.client.inference.put(
@@ -457,16 +457,16 @@ class Model:
                         "service_settings": self.config.get("service_settings", {})
                     }
                 )
-                logging.debug(f'创建推理服务成功: {self.inference_id}')
+                logging.debug(f'Created inference service successfully: {self.inference_id}')
             except Exception as e:
-                logging.error(f"创建推理服务失败: {e}")
+                logging.error(f"Failed to create inference service: {e}")
                 raise
 
     def _create_model_pipeline(self):
-        """创建模型专用的处理pipeline"""
+        """Create a processing pipeline dedicated to the model"""
         try:
             self.client.ingest.get_pipeline(id=self.pipeline_id)
-            logging.debug(f'Pipeline已存在: {self.pipeline_id}')
+            logging.debug(f'Pipeline already exists: {self.pipeline_id}')
             return
         except NotFoundError:
             pass
@@ -537,17 +537,17 @@ class Model:
                     "processors": processors
                 }
             )
-            logging.debug(f'创建模型Pipeline成功: {self.pipeline_id}')
+            logging.debug(f'Created model Pipeline successfully: {self.pipeline_id}')
         except Exception as e:
-            logging.error(f"创建模型Pipeline失败: {e}")
+            logging.error(f"Failed to create model Pipeline: {e}")
             raise
 
     def _create_index_template(self):
-        """创建模型专用的索引模板"""
+        """Create an index template dedicated to the model"""
         try:
             self.client.indices.exists_template(name=self.template_name)
-            logging.debug(f'索引模板已存在: {self.template_name}')
-            # return
+            logging.debug(f'Index template already exists: {self.template_name}')
+            return
         except:
             pass
 
@@ -613,14 +613,14 @@ class Model:
                 name=self.template_name,
                 body=template
             )
-            logging.debug(f'创建索引模板成功: {self.template_name}')
+            logging.debug(f'Created index template successfully: {self.template_name}')
         except Exception as e:
-            logging.error(f"创建索引模板失败: {e}")
+            logging.error(f"Failed to create index template: {e}")
             raise
 
 
 class Collection:
-    """集合（知识库）抽象，对应一个ES索引"""
+    """Collection (knowledge base) abstraction, corresponding to an ES index"""
     
     def __init__(self, client: Client, name: str, user: User, model: Optional[Model] = None):
         self.client = client
@@ -628,7 +628,7 @@ class Collection:
         self.user = user
         self.model = model
         
-        # 索引命名规则
+        # Index naming convention
         if model:
             self.index_name = f"{model.model_id}__{user.username}__{name}"
         else:
@@ -638,33 +638,33 @@ class Collection:
             text_content: Optional[str] = None, metadata: Optional[Dict] = None, 
             timeout: int = 600) -> Dict:
         """
-        添加文档到集合
+        Add a document to the collection
         
         Args:
-            document_id: 文档ID
-            name: 文档名称
-            file_content: 文件内容（二进制）
-            text_content: 文本内容
-            metadata: 元数据
-            timeout: 超时时间
+            document_id: Document ID
+            name: Document name
+            file_content: File content (binary)
+            text_content: Text content
+            metadata: Metadata
+            timeout: Timeout
         """
         if not file_content and not text_content:
-            raise ValueError("必须提供 file_content 或 text_content")
+            raise ValueError("Must provide file_content or text_content")
         
         doc_data = {
             "name": name,
             "metadata": metadata or {},
         }
         
-        # 如果有模型，添加model_id触发向量化
+        # If there is a model, add model_id to trigger vectorization
         if self.model:
             doc_data["model_id"] = self.model.inference_id
         
         if file_content:
-            # 处理文件内容
+            # Process file content
             doc_data["data"] = base64.b64encode(file_content).decode()
         elif text_content:
-            # 处理文本内容
+            # Process text content
             doc_data["attachment"] = {"content": text_content}
         
         try:
@@ -673,23 +673,23 @@ class Collection:
                 id=document_id,
                 body=doc_data,
                 timeout=f"{timeout}s",
-                refresh='wait_for'  # 确保文档立即可见
+                refresh='wait_for'  # Ensure the document is immediately visible
             )
             return response
         except Exception as e:
-            logging.error(f"添加文档失败: {e}")
+            logging.error(f"Failed to add document: {e}")
             raise
     
     async def query(self, query_text: str, metadata_filter: Optional[Dict] = None, 
                    size: int = 5, include_embedding: bool = True) -> List[Dict]:
         """
-        查询集合中的相关文档
+        Query the collection for relevant documents
         
         Args:
-            query_text: 查询文本
-            metadata_filter: 元数据过滤条件
-            size: 返回结果数量
-            include_embedding: 是否包含向量搜索
+            query_text: Query text
+            metadata_filter: Metadata filter conditions
+            size: Number of results to return
+            include_embedding: Whether to include vector search
         """
         filter_conditions = []
         if metadata_filter:
@@ -703,7 +703,7 @@ class Collection:
                         "term": {f"metadata.{key}": value}
                     })
         
-        # 文本搜索
+        # Text search
         text_search_body = {
             "query": {
                 "bool": {
@@ -726,15 +726,15 @@ class Collection:
                     "filter": filter_conditions
                 }
             },
-            "size": size * 2,  # 获取更多结果用于RRF合并
+            "size": size * 2,  # Get more results for RRF merging
             "_source": ["name", "metadata"],
         }
         
-        # 执行搜索任务
+        # Execute search tasks
         searches = []
         search_results = []
         
-        # 文本搜索任务
+        # Text search task
         async def text_search():
             return await self.client.async_client.search(
                 index=self.index_name,
@@ -743,7 +743,7 @@ class Collection:
         
         searches.append(text_search())
         
-        # 向量搜索（如果配置了模型）
+        # Vector search (if a model is configured)
         if include_embedding and self.model:
             vector_search_body = {
                 "knn": {
@@ -755,7 +755,7 @@ class Collection:
                             "model_text": query_text,
                         }
                     },
-                    "k": size * 2,  # 获取更多结果用于RRF合并
+                    "k": size * 2,  # Get more results for RRF merging
                     "num_candidates": size * 10,
                     "inner_hits": {
                         "_source": ["chunks.content", "chunks.metadata"],
@@ -774,16 +774,16 @@ class Collection:
             
             searches.append(vector_search())
         
-        # 执行所有搜索
+        # Execute all searches
         responses = await asyncio.gather(*searches, return_exceptions=True)
         
-        # 处理结果并准备RRF合并
+        # Process results and prepare for RRF merging
         search_results = []
-        all_chunk_data = {}  # 存储所有chunk的详细信息
+        all_chunk_data = {}  # Store detailed information for all chunks
         
         for i, response in enumerate(responses):
             if isinstance(response, Exception):
-                logging.warning(f"搜索执行失败: {response}")
+                logging.warning(f"Search execution failed: {response}")
                 continue
             
             search_type = "text" if i == 0 else "vector"
@@ -795,7 +795,7 @@ class Collection:
                         chunk_key = f"{doc['_id']}_{chunk['_nested']['offset']}"
                         chunk_results.append((chunk_key, chunk['_score']))
                         
-                        # 存储chunk的详细信息
+                        # Store detailed information for the chunk
                         if chunk_key not in all_chunk_data:
                             all_chunk_data[chunk_key] = {
                                 'document_id': doc['_id'],
@@ -809,29 +809,29 @@ class Collection:
             
             search_results.append(chunk_results)
         
-        # 如果只有一个搜索结果，直接返回
+        # If there is only one search result, return it directly
         if len(search_results) == 1:
             merged_results = search_results[0]
         elif len(search_results) > 1:
-            # 使用RRF算法合并结果
+            # Merge results using the RRF algorithm
             merged_results = rrf(*search_results, k=60)
         else:
             merged_results = []
         
-        # 构建最终结果
+        # Build the final results
         final_results = []
         for chunk_key, rrf_score in merged_results[:size]:
             if chunk_key in all_chunk_data:
                 result = all_chunk_data[chunk_key].copy()
                 result['rrf_score'] = rrf_score
-                # 如果有RRF分数，也可以用作主要分数
+                # If there is an RRF score, use it as the main score
                 result['final_score'] = rrf_score
                 final_results.append(result)
         
         return final_results
     
     def get(self, document_id: str) -> Optional[Dict]:
-        """获取指定文档"""
+        """Get the specified document"""
         try:
             response = self.client.client.get(
                 index=self.index_name,
@@ -841,11 +841,11 @@ class Collection:
         except NotFoundError:
             return None
         except Exception as e:
-            logging.error(f"获取文档失败: {e}")
+            logging.error(f"Failed to get document: {e}")
             raise
     
     def delete(self, document_id: str) -> bool:
-        """删除指定文档"""
+        """Delete the specified document"""
         try:
             self.client.client.delete(
                 index=self.index_name,
@@ -856,11 +856,11 @@ class Collection:
         except NotFoundError:
             return False
         except Exception as e:
-            logging.error(f"删除文档失败: {e}")
+            logging.error(f"Failed to delete document: {e}")
             raise
     
     def list_documents(self, offset: int = 0, limit: int = 10) -> Dict:
-        """列出集合中的文档"""
+        """List documents in the collection"""
         try:
             response = self.client.client.search(
                 index=self.index_name,
@@ -885,29 +885,29 @@ class Collection:
         except NotFoundError:
             return {"total": 0, "documents": []}
         except Exception as e:
-            logging.error(f"列出文档失败: {e}")
+            logging.error(f"Failed to list documents: {e}")
             raise
     
     def drop(self):
-        """删除整个集合"""
+        """Delete the entire collection"""
         try:
             if self.client.client.indices.exists(index=self.index_name):
                 self.client.client.indices.delete(index=self.index_name)
-                logging.debug(f"删除索引成功: {self.index_name}")
+                logging.debug(f"Deleted index successfully: {self.index_name}")
             
             try:
                 self.client.client.ingest.delete_pipeline(id=self.pipeline_id)
-                logging.debug(f"删除Pipeline成功: {self.pipeline_id}")
+                logging.debug(f"Deleted Pipeline successfully: {self.pipeline_id}")
             except NotFoundError:
                 pass
         except Exception as e:
-            logging.error(f"删除集合失败: {e}")
+            logging.error(f"Failed to delete collection: {e}")
             raise
 
 
-# RRF算法实现
+# RRF algorithm implementation
 def rrf(*queries, k: int = 60) -> List[tuple]:
-    """Reciprocal Rank Fusion算法"""
+    """Reciprocal Rank Fusion algorithm"""
     ranks = [{d[0]: i + 1 for i, d in enumerate(q)} for q in queries]
     result = {}
     for rank in ranks:
@@ -916,7 +916,7 @@ def rrf(*queries, k: int = 60) -> List[tuple]:
     return sorted(result.items(), key=lambda kv: kv[1], reverse=True)
 
 
-# 命令行参数处理
+# Command line argument processing
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
     import sys
@@ -940,14 +940,14 @@ if __name__ == "__main__":
     command = sys.argv[1]
     
     async def main():
-        # 创建客户端
+        # Create client
         client = Client('http://0.0.0.0:9200')
         
-        collection_name = "test_documents123"  # 默认集合名
-        model_id = "bge-small-en-v1.5"  # 默认模型
+        collection_name = "test_documents123"  # Default collection name
+        model_id = "bge-small-en-v1.5"  # Default model
         
         if command == "setup":
-            # 初始化用户
+            # Initialize user
             success = client.add_user('test_user', 'test_api_key', metadata={
                 "email": "test@test.com",
                 "role": "admin",
@@ -957,94 +957,94 @@ if __name__ == "__main__":
                 }
             })
             if success:
-                print("用户初始化成功")
+                print("User initialized successfully")
             else:
-                print("用户初始化失败")
-            # BGE模型配置
+                print("User initialization failed")
+            # BGE model configuration
             config = {
                 "service": "hugging_face",
                 "service_settings": {
-                    "api_key": os.getenv("HF_API_KEY", "placeholder"),
-                    "url": os.getenv("BGE_MODEL_URL", "http://192.168.9.62:8080/embed"),
+                    "api_key": os.getenv("TEXT_EMBEDDING_API_KEY", "placeholder"),
+                    "url": os.getenv("TEXT_EMBEDDING_URL", "http://192.168.9.62:8080/embed"),
                 },
                 "dimensions": 384
             }
             client.register_model(model_id, config)
-            print("模型注册成功")
+            print("Model registered successfully")
         elif command == "list_models":
-            # 列出可用模型
+            # List available models
             try:
                 models = client.list_models()
-                print(f"可用模型列表 (共 {len(models)} 个模型):")
+                print(f"Available models (total: {len(models)}):")
                 print("=" * 50)
                 for model in models:
-                    print(f"模型ID: {model['model_id']}")
-                    print(f"服务类型: {model['config'].get('service', 'unknown')}")
-                    print(f"向量维度: {model['dimensions']}")
+                    print(f"Model ID: {model['model_id']}")
+                    print(f"Service Type: {model['config'].get('service', 'unknown')}")
+                    print(f"Vector Dimensions: {model['dimensions']}")
                     print("-" * 30)
             except Exception as e:
-                print(f"列出模型失败: {e}")
+                print(f"Failed to list models: {e}")
         elif command == "list_users":
-            # 列出所有用户
+            # List all users
             try:
                 users_info = User.list_all_users(client.client, "user_auth")
-                print(f"用户列表 (共 {users_info['total']} 个用户):")
+                print(f"User list (total: {users_info['total']}):")
                 print("=" * 50)
                 for user in users_info['users']:
-                    print(f"用户名: {user['username']}")
-                    print(f"创建时间: {user['created_at']}")
-                    print(f"最后登录: {user['last_login'] or '从未登录'}")
+                    print(f"Username: {user['username']}")
+                    print(f"Created At: {user['created_at']}")
+                    print(f"Last Login: {user['last_login'] or 'Never'}")
                     if user['metadata']:
-                        print(f"元数据: {user['metadata']}")
+                        print(f"Metadata: {user['metadata']}")
                         print("-" * 30)
             except Exception as e:
-                print(f"列出用户失败: {e}")
+                print(f"Failed to list users: {e}")
         elif command == "list_collections":
-            # 列出用户的所有集合
+            # List all collections for the user
             try:
-                # 用户认证
+                # User authentication
                 user = client.authenticate('test_user', 'test_api_key')
                 collections = client.list_collections()
-                print(f"用户 {user.username} 的集合列表 (共 {len(collections)} 个集合):")
+                print(f"Collections for user {user.username} (total: {len(collections)}):")
                 print("=" * 50)
                 for collection in collections:
-                    print(f"集合名: {collection['name']}")
-                    print(f"模型ID: {collection['model_id']}")
-                    print(f"索引名: {collection['index']}")
-                    print(f"健康状态: {collection['health']}")
-                    print(f"状态: {collection['status']}")
-                    print(f"文档数量: {collection['doc_count']}")
-                    print(f"存储大小: {collection['store_size']}")
+                    print(f"Collection Name: {collection['name']}")
+                    print(f"Model ID: {collection['model_id']}")
+                    print(f"Index Name: {collection['index']}")
+                    print(f"Health: {collection['health']}")
+                    print(f"Status: {collection['status']}")
+                    print(f"Document Count: {collection['doc_count']}")
+                    print(f"Storage Size: {collection['store_size']}")
                     print("-" * 30)
             except Exception as e:
-                print(f"列出集合失败: {e}")
+                print(f"Failed to list collections: {e}")
         elif command == "list_documents":
-            # 列出指定集合中的文档
+            # List documents in the specified collection
             if len(sys.argv) >= 3:
                 collection_name = sys.argv[2]
             if len(sys.argv) >= 4:
                 model_id = sys.argv[3]
             
             try:
-                # 用户认证
+                # User authentication
                 user = client.authenticate('test_user', 'test_api_key')
-                # 获取集合
+                # Get collection
                 collection = client.get_collection(collection_name, model_id)
                 
-                # 列出文档
+                # List documents
                 documents_info = collection.list_documents()
-                print(f"集合 '{collection_name}' (模型: {model_id}) 中的文档列表 (共 {documents_info['total']} 个文档):")
+                print(f"Documents in collection '{collection_name}' (Model: {model_id}) (total: {documents_info['total']}):")
                 print("=" * 50)
                 for doc in documents_info['documents']:
-                    print(f"文档ID: {doc['id']}")
-                    print(f"文档名: {doc['name']}")
+                    print(f"Document ID: {doc['id']}")
+                    print(f"Document Name: {doc['name']}")
                     if doc['metadata']:
-                        print(f"元数据: {doc['metadata']}")
+                        print(f"Metadata: {doc['metadata']}")
                         print("-" * 30)
             except Exception as e:
-                print(f"列出文档失败: {e}")
+                print(f"Failed to list documents: {e}")
         elif command == "add" and len(sys.argv) >= 3:
-            # 添加文档
+            # Add a document
             file_path = sys.argv[2]
             if len(sys.argv) >= 4:
                 collection_name = sys.argv[3]
@@ -1052,16 +1052,16 @@ if __name__ == "__main__":
                 model_id = sys.argv[4]
                 
             if not os.path.exists(file_path):
-                print(f"文件不存在: {file_path}")
+                print(f"File does not exist: {file_path}")
                 return
                 
-            # 用户认证
+            # User authentication
             user = client.authenticate('test_user', 'test_api_key')
             
-            # 获取集合（使用链式调用）
-            collection = client.with_model(model_id).get_collection(collection_name)
+            # Get collection
+            collection = client.get_collection(collection_name, model_id)
             
-            # 添加文档
+            # Add document
             try:
                 with open(file_path, 'rb') as f:
                     file_name = os.path.basename(file_path)
@@ -1072,42 +1072,42 @@ if __name__ == "__main__":
                         file_content=f.read(),
                         metadata={'source': file_path, 'type': 'file'}
                     )
-                    print(f"添加文档成功: {file_name} (模型: {model_id})")
+                    print(f"Added document successfully: {file_name} (Model: {model_id})")
             except Exception as e:
-                print(f"添加文档失败: {e}")
+                print(f"Failed to add document: {e}")
                 
         elif command == "search" and len(sys.argv) >= 3:
-            # 搜索文档
+            # Search documents
             query = sys.argv[2]
             if len(sys.argv) >= 4:
                 collection_name = sys.argv[3]
             if len(sys.argv) >= 5:
                 model_id = sys.argv[4]
             
-            # 用户认证
+            # User authentication
             user = client.authenticate('test_user', 'test_api_key')
 
-            # 获取集合
+            # Get collection
             collection = client.get_collection(collection_name, model_id)
             
-            # 查询文档
+            # Query documents
             try:
                 results = await collection.query(
                     query_text=query,
                     size=5
                 )
-                print(f"在集合 '{collection_name}' (模型: {model_id}) 中查询 '{query}' 的结果 ({len(results)} 个):")
+                print(f"Results for query '{query}' in collection '{collection_name}' (Model: {model_id}) (total: {len(results)}):")
                 print("=" * 50)
                 for i, result in enumerate(results, 1):
-                    print(f"{i}. 文档: {result['document_name']}")
-                    print(f"   内容: {result['chunk_content'][:200]}...")
-                    print(f"   分数: {result.get('final_score', result['score']):.4f}")
+                    print(f"{i}. Document: {result['document_name']}")
+                    print(f"   Content: {result['chunk_content'][:200]}...")
+                    print(f"   Score: {result.get('final_score', result['score']):.4f}")
                     print("-" * 30)
             except Exception as e:
-                print(f"查询失败: {e}")
+                print(f"Search failed: {e}")
                 
         else:
-            print("无效的命令或参数")
+            print("Invalid command or arguments")
             usage()
     
     asyncio.run(main())
