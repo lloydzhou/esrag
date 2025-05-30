@@ -10,7 +10,7 @@ from elasticsearch import Elasticsearch, AsyncElasticsearch, NotFoundError
 class Client:
     """Main client for the RAG system, managing ES connections and global configurations"""
     
-    def __init__(self, hosts: Union[str, List[str]], **kwargs):
+    def __init__(self, hosts: Union[str, List[str]], force_recreate=None, **kwargs):
         """
         Initialize the client
         
@@ -19,11 +19,12 @@ class Client:
             **kwargs: Other ES connection parameters
         """
         self.hosts = hosts if isinstance(hosts, list) else [hosts]
-        self.client = Elasticsearch(self.hosts, **kwargs)
+        self.client = Elasticsearch(self.hosts, **kwargs).options(ignore_status=404)
         self.async_client = AsyncElasticsearch(self.hosts, **kwargs)
         self._collections = {}
         self._predefined_models = {}
         self._user = None
+        self.force_recreate = force_recreate if force_recreate is not None else os.getenv("FORCE_RECREATE", "false").lower() == "true"
         self._init_scripts()
         self._load_existing_models()
 
@@ -49,7 +50,7 @@ class Client:
     def register_model(self, model_id: str, config: Dict) -> 'Model':
         """Register a predefined model"""
         model = Model(
-            client=self.client,
+            client=self,
             model_id=model_id,
             config=config
         )
@@ -148,7 +149,7 @@ class Client:
                             "dimensions": config.get('service_settings', {}).get('dimensions', 384)
                         }
                         model = Model(
-                            client=self.client,
+                            client=self,
                             model_id=model_id,
                             config=service_config
                         )
@@ -160,36 +161,101 @@ class Client:
             logging.warning(f"Failed to load existing models: {e}")
 
     def _init_scripts(self):
-        if self.client.get_script(id="text_splitter", ignore=[404]):
+        if self.client.get_script(id="text_splitter"):
             logging.debug("Text splitting script already exists")
-            return
-        """Initialize ES script"""
+            if not self.force_recreate:
+                return
+        """Initialize ES  script"""
         script_source = """
-            if (ctx.attachment?.content != null) {
-                def content = ctx.attachment.content;
-                def config = params.splitter_config;
-                def chunks = [];
-                int chunkSize = config.chunk_size;
-                int overlap = config.chunk_overlap;
+        if (ctx.attachment?.content != null) {
+            String content = ctx.attachment.content;
+            Map config = params.splitter_config;
+            List chunks = new ArrayList();
+            int chunkSize = config.chunk_size;
+            int overlap = config.chunk_overlap;
+            
+            // Simple split by common delimiters
+            String[] sentences = content.splitOnToken("\\\\s*[.!?。！？]\\\\s*|\\\\n\\\\n|\\\\s*[;；]\\\\s*");
+            
+            // Filter out empty sentences
+            List validSentences = new ArrayList();
+            for (String sentence : sentences) {
+                String trimmed = sentence.trim();
+                if (trimmed.length() > 0) {
+                    validSentences.add(trimmed);
+                }
+            }
+            
+            // If no successful split, use character-based chunking
+            if (validSentences.size() <= 1) {
+                String text = content.trim();
+                for (int i = 0; i < text.length(); i += (chunkSize - overlap)) {
+                    int end = (int)Math.min(i + chunkSize, text.length());
+                    String chunk = text.substring(i, end);
+                    Map chunkData = new HashMap();
+                    chunkData.put('content', chunk);
+                    Map metadata = new HashMap();
+                    metadata.put('index', chunks.size());
+                    metadata.put('offset', i);
+                    metadata.put('length', chunk.length());
+                    chunkData.put('metadata', metadata);
+                    chunks.add(chunkData);
+                    if (end >= text.length()) break;
+                }
+            } else {
+                // Merge sentences into chunks
+                String currentChunk = '';
+                int chunkIndex = 0;
+                int startOffset = 0;
                 
-                for (int i = 0; i < content.length(); i += (chunkSize - overlap)) {
-                    int end = (int)Math.min(i + chunkSize, content.length());
-                    def chunkContent = content.substring(i, end);
+                for (int i = 0; i < validSentences.size(); i++) {
+                    String sentence = (String)validSentences.get(i);
                     
-                    chunks.add([
-                        'content': chunkContent,
-                        'metadata': [
-                            'index': chunks.size(),
-                            'offset': i,
-                            'length': chunkContent.length()
-                        ]
-                    ]);
-                    
-                    if (end >= content.length()) break;
+                    // Check if adding this sentence would exceed chunk size
+                    if (currentChunk.length() > 0 && (currentChunk.length() + sentence.length() + 1) > chunkSize) {
+                        // Save current chunk
+                        Map chunkData = new HashMap();
+                        chunkData.put('content', currentChunk.trim());
+                        Map metadata = new HashMap();
+                        metadata.put('index', chunkIndex++);
+                        metadata.put('offset', startOffset);
+                        metadata.put('length', currentChunk.trim().length());
+                        chunkData.put('metadata', metadata);
+                        chunks.add(chunkData);
+                        
+                        // Calculate overlap for next chunk
+                        String overlapText = '';
+                        if (overlap > 0 && currentChunk.length() > overlap) {
+                            overlapText = currentChunk.substring(currentChunk.length() - overlap).trim() + ' ';
+                        }
+                        
+                        // Start new chunk
+                        startOffset += currentChunk.length() - overlapText.length();
+                        currentChunk = overlapText + sentence;
+                    } else {
+                        // Add sentence to current chunk
+                        if (currentChunk.length() > 0) {
+                            currentChunk += ' ';
+                        }
+                        currentChunk += sentence;
+                    }
                 }
                 
-                ctx.chunks = chunks;
+                // Add final chunk if not empty
+                if (currentChunk.trim().length() > 0) {
+                    Map chunkData = new HashMap();
+                    chunkData.put('content', currentChunk.trim());
+                    Map metadata = new HashMap();
+                    metadata.put('index', chunkIndex);
+                    metadata.put('offset', startOffset);
+                    metadata.put('length', currentChunk.trim().length());
+                    chunkData.put('metadata', metadata);
+                    chunks.add(chunkData);
+                }
             }
+            
+            ctx.chunks = chunks;
+        }
         """
         
         try:
@@ -411,7 +477,7 @@ class User:
 class Model:
     """Model management, responsible for inference service, pipeline, and index template"""
     
-    def __init__(self, client: Elasticsearch, model_id: str, config: Dict):
+    def __init__(self, client: Client, model_id: str, config: Dict):
         self.client = client
         self.model_id = model_id
         self.config = config
@@ -431,36 +497,31 @@ class Model:
     
     def _init_inference(self):
         """Initialize inference service"""
-        if self._exists:
-            return
-        try:
-            # self.client.inference.delete(inference_id=self.inference_id, ignore=[404], force=True)
-            # raise NotFoundError("", None, None)
-            response = self.client.inference.get(inference_id=self.inference_id)
+        if self._exists or self.client.client.inference.get(inference_id=self.inference_id):
             logging.debug(f'Inference service already exists: {self.inference_id}')
-        except NotFoundError:
-            try:
-                response = self.client.inference.put(
-                    task_type="text_embedding",
-                    inference_id=self.inference_id,
-                    body={
-                        "service": self.config.get("service", "openai"),
-                        "service_settings": self.config.get("service_settings", {})
-                    }
-                )
-                logging.debug(f'Created inference service successfully: {self.inference_id}')
-            except Exception as e:
-                logging.error(f"Failed to create inference service: {e}")
-                raise
+            if not self.client.force_recreate:
+                return
+        try:
+            self.client.client.inference.delete(inference_id=self.inference_id, force=True)
+            response = self.client.client.inference.put(
+                task_type="text_embedding",
+                inference_id=self.inference_id,
+                body={
+                    "service": self.config.get("service", "openai"),
+                    "service_settings": self.config.get("service_settings", {})
+                }
+            )
+            logging.debug(f'Created inference service successfully: {self.inference_id}')
+        except Exception as e:
+            logging.error(f"Failed to create inference service: {e}")
+            raise
 
     def _create_model_pipeline(self):
         """Create a processing pipeline dedicated to the model"""
-        try:
-            self.client.ingest.get_pipeline(id=self.pipeline_id)
+        if self.client.client.ingest.get_pipeline(id=self.pipeline_id):
             logging.debug(f'Pipeline already exists: {self.pipeline_id}')
-            return
-        except NotFoundError:
-            pass
+            if not self.client.force_recreate:
+                return
             
         processors = [
             {
@@ -477,8 +538,8 @@ class Model:
                     "id": "text_splitter",
                     "params": {
                         "splitter_config": {
-                            "chunk_size": 1000,
-                            "chunk_overlap": 100,
+                            "chunk_size": 512,
+                            "chunk_overlap": 16,
                         }
                     }
                 }
@@ -513,7 +574,7 @@ class Model:
         ]
         
         try:
-            response = self.client.ingest.put_pipeline(
+            response = self.client.client.ingest.put_pipeline(
                 id=self.pipeline_id,
                 body={
                     "description": f"Processing pipeline for model {self.model_id}",
@@ -527,12 +588,10 @@ class Model:
 
     def _create_index_template(self):
         """Create an index template dedicated to the model"""
-        try:
-            self.client.indices.exists_template(name=self.template_name)
+        if self.client.client.indices.exists_template(name=self.template_name):
             logging.debug(f'Index template already exists: {self.template_name}')
-            return
-        except:
-            pass
+            if not self.client.force_recreate:
+                return
 
         dimensions = self.get_dimensions()
         
@@ -592,7 +651,7 @@ class Model:
         }
         
         try:
-            self.client.indices.put_template(
+            self.client.client.indices.put_template(
                 name=self.template_name,
                 body=template
             )
