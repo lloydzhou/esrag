@@ -90,6 +90,7 @@ class Client:
             return []
     
     def get_inference(self, model_id: str, service_config: Dict) -> 'InferenceService':
+        print(f"获取推理服务配置: {model_id}, {service_config}")
         """获取或创建推理服务配置"""
         if model_id not in self._inferences:
             self._inferences[model_id] = InferenceService(
@@ -905,17 +906,13 @@ if __name__ == "__main__":
         client = Client('http://0.0.0.0:9200')
         # 创建推理服务配置
         inference_config = {
-            "model_id": "bge-small-en-v1.5",
+            "model_id": "bge-small-en-v1.5-1",
             "service": "hugging_face",
             "service_settings": {
                 "api_key": "placeholder",
-                "url": "http://192.168.9.62:8080/embed",
+                "url": "http://192.168.9.62:32778/embed",
             },
-            "dimensions": 384
         }
-        # inference_config = {
-        #     "model_id": ".multilingual-e5-small-elasticsearch",
-        # }
         collection_name = "test_documents"  # 默认集合名
         
         if command == "setup":
@@ -1022,18 +1019,7 @@ if __name__ == "__main__":
             
             # 用户认证
             user = client.authenticate('test_user', 'test_api_key')
-            
-            # 创建推理服务配置
-            inference_config = {
-                "model_id": "bge-small-en-v1.5",
-                "service": "hugging_face",
-                "service_settings": {
-                    "api_key": "placeholder",
-                    "url": "http://192.168.10.12:8080/embed",
-                },
-                "dimensions": 384
-            }
-            
+
             # 获取集合
             collection = client.get_collection(collection_name, inference_config)
             
