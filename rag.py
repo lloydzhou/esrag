@@ -804,9 +804,7 @@ class Collection:
                     "from": offset,
                     "size": limit
                 }
-            )
-            print(f"列出文档: {response}")
-            
+            )            
             return {
                 "total": response['hits']['total']['value'],
                 "documents": [
