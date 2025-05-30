@@ -88,9 +88,19 @@ collection.add(
     text_content="This is important content...",
     metadata={"category": "notes"}
 )
-```
 
-### 5. Search Documents
+# Add document with pre-processed chunks
+chunks = [
+    {"chunk_id": "chunk1", "content": "First chunk of text..."},
+    {"chunk_id": "chunk2", "content": "Second chunk of text..."}
+]
+collection.add(
+    document_id="doc3",
+    name="Chunked Document",
+    chunks=chunks,
+    metadata={"category": "chunked"}
+)
+```
 
 ```python
 import asyncio
@@ -153,7 +163,7 @@ asyncio.run(search_example())
 
 #### Methods
 
-- `add(document_id, name, file_content=None, text_content=None, metadata=None)` - Add document
+- `add(document_id, name, file_content=None, text_content=None, metadata=None, chunks=None)` - Add document
 - `query(query_text, metadata_filter=None, size=5, include_embedding=True)` - Search documents
 - `get(document_id)` - Get specific document
 - `delete(document_id)` - Delete document

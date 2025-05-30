@@ -56,17 +56,9 @@ class Client:
         self._predefined_models[model_id] = model
         return model
 
-    def get_model(self, model_id: str, service_config: Optional[Dict] = None) -> 'Model':
-        """Get or create a model"""
-        logging.debug(f"Getting model configuration: {model_id}, {service_config}")
+    def get_model(self, model_id: str) -> 'Model':
         if model_id not in self._predefined_models:
-            if not service_config:
-                raise ValueError(f"Model {model_id} is not predefined, service_config is required")
-            self._predefined_models[model_id] = Model(
-                client=self.client,
-                model_id=model_id,
-                config=service_config
-            )
+            raise ValueError(f"Model {model_id} is not predefined")
         return self._predefined_models[model_id]
 
     def list_models(self) -> List[Dict]:
@@ -197,8 +189,6 @@ class Client:
                 }
                 
                 ctx.chunks = chunks;
-            } else {
-                ctx.chunks = [];
             }
         """
         
@@ -495,7 +485,6 @@ class Model:
             },
             {
                 "foreach": {
-                    "if": "ctx?.model_id != null",
                     "field": "chunks",
                     "processor": {
                         "inference": {
@@ -518,13 +507,6 @@ class Model:
                             "ignore_missing": True
                         }
                     },
-                    "ignore_missing": True
-                }
-            },
-            {
-                "remove": {
-                    "if": "ctx?.model_id != null",
-                    "field": "model_id",
                     "ignore_missing": True
                 }
             }
@@ -635,8 +617,9 @@ class Collection:
         else:
             self.index_name = f"{user.username}__{name}"
     
-    def add(self, document_id: str, name: str, file_content: Optional[bytes] = None, 
-            text_content: Optional[str] = None, metadata: Optional[Dict] = None, 
+    def add(self, document_id: str, name: str, file_content: Optional[bytes] = None,
+            text_content: Optional[str] = None, metadata: Optional[Dict] = None,
+            chunks: Optional[List[Dict]] = None,
             timeout: int = 600) -> Dict:
         """
         Add a document to the collection
@@ -647,19 +630,16 @@ class Collection:
             file_content: File content (binary)
             text_content: Text content
             metadata: Metadata
+            chunks: Pre-processed chunks of text with embeddings (optional)
             timeout: Timeout
         """
-        if not file_content and not text_content:
-            raise ValueError("Must provide file_content or text_content")
+        if not file_content and not text_content and not chunks:
+            raise ValueError("Must provide file_content or text_content or chunks")
         
         doc_data = {
             "name": name,
             "metadata": metadata or {},
         }
-        
-        # If there is a model, add model_id to trigger vectorization
-        if self.model:
-            doc_data["model_id"] = self.model.inference_id
         
         if file_content:
             # Process file content
@@ -667,6 +647,8 @@ class Collection:
         elif text_content:
             # Process text content
             doc_data["attachment"] = {"content": text_content}
+        elif chunks:
+            doc_data["chunks"] = chunks
         
         try:
             response = self.client.client.index(

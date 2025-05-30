@@ -88,6 +88,18 @@ collection.add(
     text_content="这是重要的内容...",
     metadata={"category": "notes"}
 )
+
+# 添加带有预处理块的文档
+chunks = [
+    {"content": "这是第一个块。", "metadata": {"index": 0}},
+    {"content": "这是第二个块。", "metadata": {"index": 1}}
+]
+collection.add(
+    document_id="doc3",
+    name="分块文档",
+    chunks=chunks,
+    metadata={"category": "chunked"}
+)
 ```
 
 ### 5. 搜索文档
@@ -120,9 +132,8 @@ asyncio.run(search_example())
 
 - `add_user(username, api_key, metadata=None)` - 添加或更新用户
 - `authenticate(username, api_key)` - 用户认证
-- `register_model(model_id, config)` - 注册嵌入模型
-- `get_model(model_id, service_config=None)` - 获取或创建模型
-- `get_collection(name, model_id=None)` - 获取或创建集合
+- `register_model(model_id, config)` - 注册模型
+- `get_collection(collection_name, model_id=None)` - 获取或创建集合
 - `list_models()` - 列出可用模型
 - `list_collections()` - 列出用户的集合
 
@@ -153,7 +164,7 @@ asyncio.run(search_example())
 
 #### 方法
 
-- `add(document_id, name, file_content=None, text_content=None, metadata=None)` - 添加文档
+- `add(document_id, name, file_content=None, text_content=None, metadata=None, chunks=None)` - 添加文档
 - `query(query_text, metadata_filter=None, size=5, include_embedding=True)` - 搜索文档
 - `get(document_id)` - 获取特定文档
 - `delete(document_id)` - 删除文档
