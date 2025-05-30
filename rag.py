@@ -1,9 +1,8 @@
 import asyncio
 import logging
 import base64
-import json
+import os
 from typing import Dict, List, Optional, Union, Any
-from urllib.parse import urlparse
 from elasticsearch import Elasticsearch, AsyncElasticsearch, NotFoundError
 
 
@@ -22,10 +21,10 @@ class Client:
         self.client = Elasticsearch(self.hosts, **kwargs)
         self.async_client = AsyncElasticsearch(self.hosts, **kwargs)
         self._collections = {}
-        self._inferences = {}
+        self._predefined_models = {}
         self._user = None
         self._init_scripts()
-        self._load_existing_inferences()
+        self._load_existing_models()
 
     def add_user(self, username: str, api_key: str, metadata: Optional[Dict] = None) -> bool:
         """添加或更新用户凭据"""
@@ -46,18 +45,59 @@ class Client:
         else:
             raise ValueError(f"用户认证失败: {username}")
     
-    def get_collection(self, name: str, inference_config: Optional[Dict] = None) -> 'Collection':
+    def register_model(self, model_id: str, config: Dict) -> 'Model':
+        """注册预定义模型"""
+        model = Model(
+            client=self.client,
+            model_id=model_id,
+            config=config
+        )
+        self._predefined_models[model_id] = model
+        return model
+
+    def get_model(self, model_id: str, service_config: Optional[Dict] = None) -> 'Model':
+        """获取或创建模型"""
+        print(f"获取模型配置: {model_id}, {service_config}")
+        if model_id not in self._predefined_models:
+            if not service_config:
+                raise ValueError(f"模型 {model_id} 未预定义，需要提供 service_config")
+            self._predefined_models[model_id] = Model(
+                client=self.client,
+                model_id=model_id,
+                config=service_config
+            )
+        return self._predefined_models[model_id]
+
+    def list_models(self) -> List[Dict]:
+        """列出可用模型"""
+        return [
+            {
+                "model_id": model_id,
+                "config": model.config,
+                "dimensions": model.get_dimensions()
+            }
+            for model_id, model in self._predefined_models.items()
+        ]
+
+    def get_collection(self, name: str, model_id: Optional[str] = None) -> 'Collection':
         """获取或创建集合（知识库）"""
         if not self._user:
             raise ValueError("请先调用 authenticate() 进行用户认证")
+        
+        # 如果指定了model_id，使用该模型；否则使用默认模型
+        if model_id:
+            model = self.get_model(model_id)
+            collection_key = f"{model_id}__{self._user.username}__{name}"
+        else:
+            model = None
+            collection_key = f"{self._user.username}__{name}"
             
-        collection_key = f"{self._user.username}__{name}"
         if collection_key not in self._collections:
             self._collections[collection_key] = Collection(
                 client=self,
                 name=name,
                 user=self._user,
-                inference_config=inference_config
+                model=model
             )
         return self._collections[collection_key]
     
@@ -67,17 +107,26 @@ class Client:
             raise ValueError("请先调用 authenticate() 进行用户认证")
         
         try:
-            pattern = f"{self._user.username}_*"
+            pattern = f"*__{self._user.username}__*"
             response = self.client.cat.indices(index=pattern, format='json', ignore=[404])
             print(f"列出集合: {response}")
             if response:
+                # 支持新的索引命名格式：{model_id}__{username}__{collection_name}
                 prefix = f"{self._user.username}__"
                 collections = []
                 for idx in response:
-                    if idx['index'].startswith(prefix):
-                        collection_name = idx['index'].replace(prefix, "")
+                    if prefix in idx['index']:
+                        # 解析索引名：{model_id}__{username}__{collection_name} 或 {username}__{collection_name}
+                        index_parts = idx['index'].replace(prefix, "").split("__")
+                        if len(index_parts) == 2:
+                            model_id, collection_name = index_parts
+                        else:
+                            model_id = "default"
+                            collection_name = "__".join(index_parts)
+                        
                         collections.append({
                             "name": collection_name,
+                            "model_id": model_id,
                             "index": idx['index'],
                             "health": idx.get('health', 'unknown'),
                             "status": idx.get('status', 'unknown'),
@@ -88,20 +137,9 @@ class Client:
             return []
         except Exception:
             return []
-    
-    def get_inference(self, model_id: str, service_config: Dict) -> 'InferenceService':
-        print(f"获取推理服务配置: {model_id}, {service_config}")
-        """获取或创建推理服务配置"""
-        if model_id not in self._inferences:
-            self._inferences[model_id] = InferenceService(
-                client=self.client,
-                model_id=model_id,
-                config=service_config
-            )
-        return self._inferences[model_id]
-        
-    def _load_existing_inferences(self):
-        """从ES加载所有已存在的推理服务配置"""
+
+    def _load_existing_models(self):
+        """从ES加载所有已存在的模型推理服务配置"""
         try:
             # 获取所有推理服务
             response = self.client.inference.get()
@@ -109,24 +147,25 @@ class Client:
                 inference_id = config.get('inference_id', '')
                 if inference_id.endswith('__inference'):
                     model_id = inference_id.replace('__inference', '')
-                    # 从配置中重建InferenceService对象
-                    service_config = {
-                        "service": config.get('service', 'openai'),
-                        "service_settings": config.get('service_settings', {}),
-                        "dimensions": config.get('service_settings', {}).get('dimensions', 384)
-                    }
-                    inference_service = InferenceService(
-                        client=self.client,
-                        model_id=model_id,
-                        config=service_config
-                    )
-                    # 标记为已存在，避免重复初始化
-                    inference_service._exists = True
-                    self._inferences[model_id] = inference_service
-            logging.debug(f"加载了 {len(self._inferences)} 个已存在的推理服务")
+                    # 如果不在预定义模型中，从配置重建
+                    if model_id not in self._predefined_models:
+                        service_config = {
+                            "service": config.get('service', 'openai'),
+                            "service_settings": config.get('service_settings', {}),
+                            "dimensions": config.get('service_settings', {}).get('dimensions', 384)
+                        }
+                        model = Model(
+                            client=self.client,
+                            model_id=model_id,
+                            config=service_config
+                        )
+                        # 标记为已存在，避免重复初始化
+                        model._exists = True
+                        self._predefined_models[model_id] = model
+            logging.debug(f"加载了 {len(self._predefined_models)} 个模型")
         except Exception as e:
-            logging.warning(f"加载已存在的推理服务失败: {e}")
-    
+            logging.warning(f"加载已存在的模型失败: {e}")
+
     def _init_scripts(self):
         if self.client.get_script(id="text_splitter", ignore=[404]):
             logging.debug("文本分片脚本已存在")
@@ -378,26 +417,34 @@ class User:
             return {"total": 0, "users": []}
 
 
-class InferenceService:
-    """推理服务管理"""
+class Model:
+    """模型管理，负责推理服务、pipeline和index template"""
     
     def __init__(self, client: Elasticsearch, model_id: str, config: Dict):
         self.client = client
         self.model_id = model_id
         self.config = config
         self.inference_id = f"{model_id}__inference"
-        # 如果没有配置维度，则初始化推理服务
-        if not self.config.get("dimensions"):
-            self._init_inference()
+        self.pipeline_id = f"{model_id}__pipeline"
+        self.template_name = f"{model_id}__template"
+        self._exists = False
+        
+        # 初始化模型的三个组件
+        self._init_inference()
+        self._create_model_pipeline()
+        self._create_index_template()
     
     def get_dimensions(self) -> int:
         """获取嵌入向量的维度"""
-        # 从配置中获取维度，如果没有配置则使用默认值
         return self.config.get("dimensions", 384)
     
     def _init_inference(self):
         """初始化推理服务"""
+        if self._exists:
+            return
         try:
+            # self.client.inference.delete(inference_id=self.inference_id, ignore=[404], force=True)
+            # raise NotFoundError("", None, None)
             response = self.client.inference.get(inference_id=self.inference_id)
             logging.debug(f'推理服务已存在: {self.inference_id}')
         except NotFoundError:
@@ -415,44 +462,99 @@ class InferenceService:
                 logging.error(f"创建推理服务失败: {e}")
                 raise
 
-
-class Collection:
-    """集合（知识库）抽象，对应一个ES索引"""
-    
-    def __init__(self, client: Client, name: str, user: User, inference_config: Optional[Dict] = None):
-        self.client = client
-        self.name = name
-        self.user = user
-        self.index_name = f"{user.username}__{name}"
-        self.pipeline_id = f"{self.index_name}__pipeline"
-        
-        # 配置推理服务
-        if inference_config:
-            self.inference = client.get_inference(
-                inference_config["model_id"],
-                inference_config
-            )
-        else:
-            self.inference = None
-            
-        self._init_collection()
-    
-    def _init_collection(self):
-        """初始化集合和pipeline"""
-        self._init_pipeline()
-        self._init_index()
-    
-    def _init_index(self):
-        """初始化索引"""
-        if self.client.client.indices.exists(index=self.index_name):
+    def _create_model_pipeline(self):
+        """创建模型专用的处理pipeline"""
+        try:
+            self.client.ingest.get_pipeline(id=self.pipeline_id)
+            logging.debug(f'Pipeline已存在: {self.pipeline_id}')
             return
-        
-        # 获取嵌入向量维度
-        dimensions = 384  # 默认值
-        if self.inference:
-            dimensions = self.inference.get_dimensions()
+        except NotFoundError:
+            pass
             
-        mapping = {
+        processors = [
+            {
+                "attachment": {
+                    "field": "data",
+                    "target_field": "attachment",
+                    "properties": ["content", "title", "content_type"],
+                    "remove_binary": True,
+                    "ignore_missing": True
+                }
+            },
+            {
+                "script": {
+                    "id": "text_splitter",
+                    "params": {
+                        "splitter_config": {
+                            "chunk_size": 1000,
+                            "chunk_overlap": 100,
+                        }
+                    }
+                }
+            },
+            {
+                "foreach": {
+                    "if": "ctx?.model_id != null",
+                    "field": "chunks",
+                    "processor": {
+                        "inference": {
+                            "model_id": self.inference_id,
+                            "input_output": {
+                                "input_field": "_ingest._value.content",
+                                "output_field": "_ingest._value.embedding"
+                            }
+                        }
+                    },
+                    "ignore_missing": True
+                }
+            },
+            {
+                "foreach": {
+                    "field": "chunks",
+                    "processor": {
+                        "remove": {
+                            "field": "_ingest._value.model_id",
+                            "ignore_missing": True
+                        }
+                    },
+                    "ignore_missing": True
+                }
+            },
+            {
+                "remove": {
+                    "if": "ctx?.model_id != null",
+                    "field": "model_id",
+                    "ignore_missing": True
+                }
+            }
+        ]
+        
+        try:
+            response = self.client.ingest.put_pipeline(
+                id=self.pipeline_id,
+                body={
+                    "description": f"Processing pipeline for model {self.model_id}",
+                    "processors": processors
+                }
+            )
+            logging.debug(f'创建模型Pipeline成功: {self.pipeline_id}')
+        except Exception as e:
+            logging.error(f"创建模型Pipeline失败: {e}")
+            raise
+
+    def _create_index_template(self):
+        """创建模型专用的索引模板"""
+        try:
+            self.client.indices.exists_template(name=self.template_name)
+            logging.debug(f'索引模板已存在: {self.template_name}')
+            # return
+        except:
+            pass
+
+        dimensions = self.get_dimensions()
+        
+        template = {
+            "index_patterns": [f"{self.model_id}__*"],
             "mappings": {
                 "properties": {
                     "name": {
@@ -496,7 +598,6 @@ class Collection:
                             "content_type": {"type": "keyword"}
                         }
                     },
-                    "data": {"type": "text", "index": False}
                 }
             },
             "settings": {
@@ -508,96 +609,30 @@ class Collection:
         }
         
         try:
-            self.client.client.indices.create(index=self.index_name, body=mapping)
-            logging.debug(f"创建索引成功: {self.index_name}")
-        except Exception as e:
-            logging.error(f"创建索引失败: {e}")
-            raise
-    
-    def _init_pipeline(self):
-        """初始化处理pipeline"""
-        try:
-            self.client.client.ingest.get_pipeline(id=self.pipeline_id)
-            logging.debug(f'Pipeline已存在: {self.pipeline_id}')
-            return
-        except NotFoundError:
-            pass
-            
-        processors = [
-            {
-                "attachment": {
-                    "field": "data",
-                    "target_field": "attachment",
-                    "properties": ["content", "title", "content_type"],
-                    "remove_binary": True,
-                    "ignore_missing": True
-                }
-            },
-            {
-                "script": {
-                    "id": "text_splitter",
-                    "params": {
-                        "splitter_config": {
-                            "chunk_size": 1000,
-                            "chunk_overlap": 100,
-                        }
-                    }
-                }
-            }
-        ]
-        
-        # 如果配置了推理服务，添加向量化处理器
-        if self.inference:
-            processors.extend([
-                {
-                    "foreach": {
-                        "if": "ctx?.model_id != null",
-                        "field": "chunks",
-                        "processor": {
-                            "inference": {
-                                "model_id": self.inference.inference_id,
-                                "input_output": {
-                                    "input_field": "_ingest._value.content",
-                                    "output_field": "_ingest._value.embedding"
-                                }
-                            }
-                        },
-                        "ignore_missing": True
-                    }
-                },
-                {
-                    "foreach": {
-                        "field": "chunks",
-                        "processor": {
-                            "remove": {
-                                "field": "_ingest._value.model_id",
-                                "ignore_missing": True
-                            }
-                        },
-                        "ignore_missing": True
-                    }
-                },
-                {
-                    "remove": {
-                        "if": "ctx?.model_id != null",
-                        "field": "model_id",
-                        "ignore_missing": True
-                    }
-                }
-            ])
-        
-        try:
-            response = self.client.client.ingest.put_pipeline(
-                id=self.pipeline_id,
-                body={
-                    "description": f"Processing pipeline for {self.name}",
-                    "processors": processors
-                }
+            self.client.indices.put_template(
+                name=self.template_name,
+                body=template
             )
-            logging.debug(f'创建Pipeline成功: {self.pipeline_id}')
+            logging.debug(f'创建索引模板成功: {self.template_name}')
         except Exception as e:
-            logging.error(f"创建Pipeline失败: {e}")
+            logging.error(f"创建索引模板失败: {e}")
             raise
+
+
+class Collection:
+    """集合（知识库）抽象，对应一个ES索引"""
+    
+    def __init__(self, client: Client, name: str, user: User, model: Optional[Model] = None):
+        self.client = client
+        self.name = name
+        self.user = user
+        self.model = model
+        
+        # 索引命名规则
+        if model:
+            self.index_name = f"{model.model_id}__{user.username}__{name}"
+        else:
+            self.index_name = f"{user.username}__{name}"
     
     def add(self, document_id: str, name: str, file_content: Optional[bytes] = None, 
             text_content: Optional[str] = None, metadata: Optional[Dict] = None, 
@@ -621,9 +656,9 @@ class Collection:
             "metadata": metadata or {},
         }
         
-        # 如果有推理服务，添加model_id触发向量化
-        if self.inference:
-            doc_data["model_id"] = self.inference.inference_id
+        # 如果有模型，添加model_id触发向量化
+        if self.model:
+            doc_data["model_id"] = self.model.inference_id
         
         if file_content:
             # 处理文件内容
@@ -708,15 +743,15 @@ class Collection:
         
         searches.append(text_search())
         
-        # 向量搜索（如果配置了推理服务）
-        if include_embedding and self.inference:
+        # 向量搜索（如果配置了模型）
+        if include_embedding and self.model:
             vector_search_body = {
                 "knn": {
                     "filter": filter_conditions,
                     "field": "chunks.embedding",
                     "query_vector_builder": {
                         "text_embedding": {
-                            "model_id": self.inference.inference_id,
+                            "model_id": self.model.inference_id,
                             "model_text": query_text,
                         }
                     },
@@ -847,6 +882,8 @@ class Collection:
                     for hit in response['hits']['hits']
                 ]
             }
+        except NotFoundError:
+            return {"total": 0, "documents": []}
         except Exception as e:
             logging.error(f"列出文档失败: {e}")
             raise
@@ -890,10 +927,11 @@ if __name__ == "__main__":
         print("Usage:")
         print("  python rag.py setup")
         print("  python rag.py list_users")
+        print("  python rag.py list_models")
         print("  python rag.py list_collections")
-        print("  python rag.py list_documents")
-        print("  python rag.py add <file_path>")
-        print("  python rag.py search <query>")
+        print("  python rag.py list_documents [collection_name] [model_id]")
+        print("  python rag.py add <file_path> [collection_name] [model_id]")
+        print("  python rag.py search <query> [collection_name] [model_id]")
         sys.exit(1)
     
     if len(sys.argv) < 2:
@@ -904,16 +942,9 @@ if __name__ == "__main__":
     async def main():
         # 创建客户端
         client = Client('http://0.0.0.0:9200')
-        # 创建推理服务配置
-        inference_config = {
-            "model_id": "bge-small-en-v1.5-1",
-            "service": "hugging_face",
-            "service_settings": {
-                "api_key": "placeholder",
-                "url": "http://192.168.9.62:32778/embed",
-            },
-        }
-        collection_name = "test_documents"  # 默认集合名
+        
+        collection_name = "test_documents123"  # 默认集合名
+        model_id = "bge-small-en-v1.5"  # 默认模型
         
         if command == "setup":
             # 初始化用户
@@ -929,6 +960,30 @@ if __name__ == "__main__":
                 print("用户初始化成功")
             else:
                 print("用户初始化失败")
+            # BGE模型配置
+            config = {
+                "service": "hugging_face",
+                "service_settings": {
+                    "api_key": os.getenv("HF_API_KEY", "placeholder"),
+                    "url": os.getenv("BGE_MODEL_URL", "http://192.168.9.62:8080/embed"),
+                },
+                "dimensions": 384
+            }
+            client.register_model(model_id, config)
+            print("模型注册成功")
+        elif command == "list_models":
+            # 列出可用模型
+            try:
+                models = client.list_models()
+                print(f"可用模型列表 (共 {len(models)} 个模型):")
+                print("=" * 50)
+                for model in models:
+                    print(f"模型ID: {model['model_id']}")
+                    print(f"服务类型: {model['config'].get('service', 'unknown')}")
+                    print(f"向量维度: {model['dimensions']}")
+                    print("-" * 30)
+            except Exception as e:
+                print(f"列出模型失败: {e}")
         elif command == "list_users":
             # 列出所有用户
             try:
@@ -954,6 +1009,7 @@ if __name__ == "__main__":
                 print("=" * 50)
                 for collection in collections:
                     print(f"集合名: {collection['name']}")
+                    print(f"模型ID: {collection['model_id']}")
                     print(f"索引名: {collection['index']}")
                     print(f"健康状态: {collection['health']}")
                     print(f"状态: {collection['status']}")
@@ -966,16 +1022,18 @@ if __name__ == "__main__":
             # 列出指定集合中的文档
             if len(sys.argv) >= 3:
                 collection_name = sys.argv[2]
+            if len(sys.argv) >= 4:
+                model_id = sys.argv[3]
             
             try:
                 # 用户认证
                 user = client.authenticate('test_user', 'test_api_key')
                 # 获取集合
-                collection = client.get_collection(collection_name, inference_config)
+                collection = client.get_collection(collection_name, model_id)
                 
                 # 列出文档
                 documents_info = collection.list_documents()
-                print(f"集合 '{collection_name}' 中的文档列表 (共 {documents_info['total']} 个文档):")
+                print(f"集合 '{collection_name}' (模型: {model_id}) 中的文档列表 (共 {documents_info['total']} 个文档):")
                 print("=" * 50)
                 for doc in documents_info['documents']:
                     print(f"文档ID: {doc['id']}")
@@ -988,6 +1046,11 @@ if __name__ == "__main__":
         elif command == "add" and len(sys.argv) >= 3:
             # 添加文档
             file_path = sys.argv[2]
+            if len(sys.argv) >= 4:
+                collection_name = sys.argv[3]
+            if len(sys.argv) >= 5:
+                model_id = sys.argv[4]
+                
             if not os.path.exists(file_path):
                 print(f"文件不存在: {file_path}")
                 return
@@ -995,8 +1058,8 @@ if __name__ == "__main__":
             # 用户认证
             user = client.authenticate('test_user', 'test_api_key')
             
-            # 获取集合
-            collection = client.get_collection(collection_name, inference_config)
+            # 获取集合（使用链式调用）
+            collection = client.with_model(model_id).get_collection(collection_name)
             
             # 添加文档
             try:
@@ -1009,19 +1072,23 @@ if __name__ == "__main__":
                         file_content=f.read(),
                         metadata={'source': file_path, 'type': 'file'}
                     )
-                    print(f"添加文档成功: {file_name}")
+                    print(f"添加文档成功: {file_name} (模型: {model_id})")
             except Exception as e:
                 print(f"添加文档失败: {e}")
                 
         elif command == "search" and len(sys.argv) >= 3:
             # 搜索文档
-            query = " ".join(sys.argv[2:])
+            query = sys.argv[2]
+            if len(sys.argv) >= 4:
+                collection_name = sys.argv[3]
+            if len(sys.argv) >= 5:
+                model_id = sys.argv[4]
             
             # 用户认证
             user = client.authenticate('test_user', 'test_api_key')
 
             # 获取集合
-            collection = client.get_collection(collection_name, inference_config)
+            collection = client.get_collection(collection_name, model_id)
             
             # 查询文档
             try:
@@ -1029,7 +1096,7 @@ if __name__ == "__main__":
                     query_text=query,
                     size=5
                 )
-                print(f"查询 '{query}' 的结果 ({len(results)} 个):")
+                print(f"在集合 '{collection_name}' (模型: {model_id}) 中查询 '{query}' 的结果 ({len(results)} 个):")
                 print("=" * 50)
                 for i, result in enumerate(results, 1):
                     print(f"{i}. 文档: {result['document_name']}")
