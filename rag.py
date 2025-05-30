@@ -25,6 +25,7 @@ class Client:
         self._inferences = {}
         self._user = None
         self._init_scripts()
+        self._load_existing_inferences()
 
     def add_user(self, username: str, api_key: str, metadata: Optional[Dict] = None) -> bool:
         """添加或更新用户凭据"""
@@ -97,6 +98,33 @@ class Client:
                 config=service_config
             )
         return self._inferences[model_id]
+        
+    def _load_existing_inferences(self):
+        """从ES加载所有已存在的推理服务配置"""
+        try:
+            # 获取所有推理服务
+            response = self.client.inference.get()
+            for config in response.get('endpoints', {}):
+                inference_id = config.get('inference_id', '')
+                if inference_id.endswith('__inference'):
+                    model_id = inference_id.replace('__inference', '')
+                    # 从配置中重建InferenceService对象
+                    service_config = {
+                        "service": config.get('service', 'openai'),
+                        "service_settings": config.get('service_settings', {}),
+                        "dimensions": config.get('service_settings', {}).get('dimensions', 384)
+                    }
+                    inference_service = InferenceService(
+                        client=self.client,
+                        model_id=model_id,
+                        config=service_config
+                    )
+                    # 标记为已存在，避免重复初始化
+                    inference_service._exists = True
+                    self._inferences[model_id] = inference_service
+            logging.debug(f"加载了 {len(self._inferences)} 个已存在的推理服务")
+        except Exception as e:
+            logging.warning(f"加载已存在的推理服务失败: {e}")
     
     def _init_scripts(self):
         if self.client.get_script(id="text_splitter", ignore=[404]):
@@ -357,12 +385,14 @@ class InferenceService:
         self.model_id = model_id
         self.config = config
         self.inference_id = f"{model_id}__inference"
-        self._init_inference()
+        # 如果没有配置维度，则初始化推理服务
+        if not self.config.get("dimensions"):
+            self._init_inference()
     
-    def get_embedding_dims(self) -> int:
+    def get_dimensions(self) -> int:
         """获取嵌入向量的维度"""
         # 从配置中获取维度，如果没有配置则使用默认值
-        return self.config.get("embedding_dims", 384)
+        return self.config.get("dimensions", 384)
     
     def _init_inference(self):
         """初始化推理服务"""
@@ -417,9 +447,9 @@ class Collection:
             return
         
         # 获取嵌入向量维度
-        embedding_dims = 384  # 默认值
+        dimensions = 384  # 默认值
         if self.inference:
-            embedding_dims = self.inference.get_embedding_dims()
+            dimensions = self.inference.get_dimensions()
             
         mapping = {
             "mappings": {
@@ -444,7 +474,7 @@ class Collection:
                             },
                             "embedding": {
                                 "type": "dense_vector",
-                                "dims": embedding_dims,
+                                "dims": dimensions,
                                 "index": True,
                                 "similarity": "dot_product"
                             }
@@ -881,8 +911,12 @@ if __name__ == "__main__":
                 "api_key": "placeholder",
                 "url": "http://192.168.9.62:8080/embed",
             },
-            "embedding_dims": 384
+            "dimensions": 384
         }
+        # inference_config = {
+        #     "model_id": ".multilingual-e5-small-elasticsearch",
+        # }
+        collection_name = "test_documents"  # 默认集合名
         
         if command == "setup":
             # 初始化用户
@@ -933,7 +967,6 @@ if __name__ == "__main__":
                 print(f"列出集合失败: {e}")
         elif command == "list_documents":
             # 列出指定集合中的文档
-            collection_name = "test_documents"  # 默认集合名
             if len(sys.argv) >= 3:
                 collection_name = sys.argv[2]
             
@@ -966,7 +999,7 @@ if __name__ == "__main__":
             user = client.authenticate('test_user', 'test_api_key')
             
             # 获取集合
-            collection = client.get_collection('test_documents', inference_config)
+            collection = client.get_collection(collection_name, inference_config)
             
             # 添加文档
             try:
@@ -998,11 +1031,11 @@ if __name__ == "__main__":
                     "api_key": "placeholder",
                     "url": "http://192.168.10.12:8080/embed",
                 },
-                "embedding_dims": 384
+                "dimensions": 384
             }
             
             # 获取集合
-            collection = client.get_collection('test_documents', inference_config)
+            collection = client.get_collection(collection_name, inference_config)
             
             # 查询文档
             try:
