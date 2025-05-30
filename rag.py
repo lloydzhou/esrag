@@ -2,6 +2,7 @@ import asyncio
 import logging
 import base64
 import os
+from functools import partial
 from typing import Dict, List, Optional, Union, Any
 from elasticsearch import Elasticsearch, AsyncElasticsearch, NotFoundError
 
@@ -735,11 +736,7 @@ class Collection:
         search_results = []
         
         # Text search task
-        async def text_search():
-            return await self.client.async_client.search(
-                index=self.index_name,
-                body=text_search_body
-            )
+        text_search = partial(self.client.async_client.search, index=self.index_name, body=text_search_body)
         
         searches.append(text_search())
         
@@ -766,11 +763,8 @@ class Collection:
                 "_source": ["name", "metadata"],
             }
             
-            async def vector_search():
-                return await self.client.async_client.search(
-                    index=self.index_name,
-                    body=vector_search_body
-                )
+            # Create vector search task
+            vector_search = partial(self.client.async_client.search, index=self.index_name, body=vector_search_body)
             
             searches.append(vector_search())
         
