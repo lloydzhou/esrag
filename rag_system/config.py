@@ -15,7 +15,7 @@ PIPELINE_NAME = 'attachment_embedding_pipeline1'
 
 # Text embedding inference service - using a smaller, more reliable model
 INFERENCE_SERVICE_ID = 'text_embedding_service1'
-INFERENCE_SERVICE_URL = 'http://192.168.10.12:8080/embed'
+INFERENCE_SERVICE_URL = 'http://192.168.9.62:8080/embed'
 EMBEDDING_MODEL = 'BAAI/bge-small-en-v1.5'  # Smaller, more reliable model
 
 # Vector dimensions (bge-small-en-v1.5 produces 384-dimensional vectors)
