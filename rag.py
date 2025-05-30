@@ -67,9 +67,23 @@ class Client:
         
         try:
             pattern = f"{self._user.username}_*"
-            response = self.client.indices.get(index=pattern, ignore=[404])
-            if isinstance(response, dict):
-                return [name.replace(f"{self._user.username}_", "") for name in response.keys()]
+            response = self.client.cat.indices(index=pattern, format='json', ignore=[404])
+            print(f"列出集合: {response}")
+            if response:
+                prefix = f"{self._user.username}__"
+                collections = []
+                for idx in response:
+                    if idx['index'].startswith(prefix):
+                        collection_name = idx['index'].replace(prefix, "")
+                        collections.append({
+                            "name": collection_name,
+                            "index": idx['index'],
+                            "health": idx.get('health', 'unknown'),
+                            "status": idx.get('status', 'unknown'),
+                            "doc_count": idx.get('docs.count', '0'),
+                            "store_size": idx.get('store.size', '0b')
+                        })
+                return collections
             return []
         except Exception:
             return []
@@ -132,20 +146,6 @@ class Client:
             logging.debug("文本分片脚本初始化成功")
         except Exception as e:
             logging.warning(f"脚本初始化失败: {e}")
-    
-    def check_ik_plugin(self) -> bool:
-        """检查analysis-ik插件是否已安装"""
-        try:
-            response = self.client.cat.plugins(format="json")
-            for plugin in response:
-                if 'analysis-ik' in plugin.get('component', ''):
-                    logging.debug("analysis-ik插件已安装")
-                    return True
-            logging.warning("analysis-ik插件未安装")
-            return False
-        except Exception as e:
-            logging.error(f"检查插件状态失败: {e}")
-            return False
 
 
 class User:
@@ -805,6 +805,7 @@ class Collection:
                     "size": limit
                 }
             )
+            print(f"列出文档: {response}")
             
             return {
                 "total": response['hits']['total']['value'],
@@ -859,6 +860,9 @@ if __name__ == "__main__":
     def usage():
         print("Usage:")
         print("  python rag.py setup")
+        print("  python rag.py list_users")
+        print("  python rag.py list_collections")
+        print("  python rag.py list_documents")
         print("  python rag.py add <file_path>")
         print("  python rag.py search <query>")
         sys.exit(1)
@@ -871,13 +875,18 @@ if __name__ == "__main__":
     async def main():
         # 创建客户端
         client = Client('http://0.0.0.0:9200')
+        # 创建推理服务配置
+        inference_config = {
+            "model_id": "bge-small-en-v1.5",
+            "service": "hugging_face",
+            "service_settings": {
+                "api_key": "placeholder",
+                "url": "http://192.168.9.62:8080/embed",
+            },
+            "embedding_dims": 384
+        }
         
         if command == "setup":
-            # 初始化设置
-            if not client.check_ik_plugin():
-                print("警告: analysis-ik插件未安装，中文分词功能可能不可用")
-                print("安装命令: elasticsearch-plugin install https://github.com/medcl/elasticsearch-analysis-ik/releases/download/v8.11.0/elasticsearch-analysis-ik-8.11.0.zip")
-            
             # 初始化用户
             success = client.add_user('test_user', 'test_api_key', metadata={
                 "email": "test@test.com",
@@ -891,8 +900,63 @@ if __name__ == "__main__":
                 print("用户初始化成功")
             else:
                 print("用户初始化失败")
+        elif command == "list_users":
+            # 列出所有用户
+            try:
+                users_info = User.list_all_users(client.client, "user_auth")
+                print(f"用户列表 (共 {users_info['total']} 个用户):")
+                print("=" * 50)
+                for user in users_info['users']:
+                    print(f"用户名: {user['username']}")
+                    print(f"创建时间: {user['created_at']}")
+                    print(f"最后登录: {user['last_login'] or '从未登录'}")
+                    if user['metadata']:
+                        print(f"元数据: {user['metadata']}")
+                        print("-" * 30)
+            except Exception as e:
+                print(f"列出用户失败: {e}")
+        elif command == "list_collections":
+            # 列出用户的所有集合
+            try:
+                # 用户认证
+                user = client.authenticate('test_user', 'test_api_key')
+                collections = client.list_collections()
+                print(f"用户 {user.username} 的集合列表 (共 {len(collections)} 个集合):")
+                print("=" * 50)
+                for collection in collections:
+                    print(f"集合名: {collection['name']}")
+                    print(f"索引名: {collection['index']}")
+                    print(f"健康状态: {collection['health']}")
+                    print(f"状态: {collection['status']}")
+                    print(f"文档数量: {collection['doc_count']}")
+                    print(f"存储大小: {collection['store_size']}")
+                    print("-" * 30)
+            except Exception as e:
+                print(f"列出集合失败: {e}")
+        elif command == "list_documents":
+            # 列出指定集合中的文档
+            collection_name = "test_documents"  # 默认集合名
+            if len(sys.argv) >= 3:
+                collection_name = sys.argv[2]
+            
+            try:
+                # 用户认证
+                user = client.authenticate('test_user', 'test_api_key')
+                # 获取集合
+                collection = client.get_collection(collection_name, inference_config)
                 
-                
+                # 列出文档
+                documents_info = collection.list_documents()
+                print(f"集合 '{collection_name}' 中的文档列表 (共 {documents_info['total']} 个文档):")
+                print("=" * 50)
+                for doc in documents_info['documents']:
+                    print(f"文档ID: {doc['id']}")
+                    print(f"文档名: {doc['name']}")
+                    if doc['metadata']:
+                        print(f"元数据: {doc['metadata']}")
+                        print("-" * 30)
+            except Exception as e:
+                print(f"列出文档失败: {e}")
         elif command == "add" and len(sys.argv) >= 3:
             # 添加文档
             file_path = sys.argv[2]
@@ -902,17 +966,6 @@ if __name__ == "__main__":
                 
             # 用户认证
             user = client.authenticate('test_user', 'test_api_key')
-            
-            # 创建推理服务配置
-            inference_config = {
-                "model_id": "bge-small-en-v1.5",
-                "service": "hugging_face",
-                "service_settings": {
-                    "api_key": "placeholder",
-                    "url": "http://192.168.9.62:8080/embed",
-                },
-                "embedding_dims": 384
-            }
             
             # 获取集合
             collection = client.get_collection('test_documents', inference_config)
