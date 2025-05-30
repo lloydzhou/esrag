@@ -909,7 +909,7 @@ if __name__ == "__main__":
                 "service": "hugging_face",
                 "service_settings": {
                     "api_key": "placeholder",
-                    "url": "http://192.168.10.12:8080/embed",
+                    "url": "http://192.168.9.62:8080/embed",
                 },
                 "embedding_dims": 384
             }
