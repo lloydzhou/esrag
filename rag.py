@@ -115,6 +115,20 @@ class Client:
             logging.info("文本分片脚本初始化成功")
         except Exception as e:
             logging.warning(f"脚本初始化失败: {e}")
+    
+    def check_ik_plugin(self) -> bool:
+        """检查analysis-ik插件是否已安装"""
+        try:
+            response = self.client.cat.plugins(format="json")
+            for plugin in response:
+                if 'analysis-ik' in plugin.get('component', ''):
+                    logging.info("analysis-ik插件已安装")
+                    return True
+            logging.warning("analysis-ik插件未安装")
+            return False
+        except Exception as e:
+            logging.error(f"检查插件状态失败: {e}")
+            return False
 
 
 class User:
@@ -641,6 +655,11 @@ if __name__ == "__main__":
         # 创建客户端
         client = Client('http://0.0.0.0:9200')
         
+        # 检查IK插件
+        if not client.check_ik_plugin():
+            print("警告: analysis-ik插件未安装，中文分词功能可能不可用")
+            print("安装命令: elasticsearch-plugin install https://github.com/medcl/elasticsearch-analysis-ik/releases/download/v8.11.0/elasticsearch-analysis-ik-8.11.0.zip")
+
         # 用户认证
         user = client.authenticate('test_user', 'test_api_key')
         
@@ -650,7 +669,7 @@ if __name__ == "__main__":
             "service": "hugging_face",
             "service_settings": {
                 "api_key": "placeholder",
-                "url": "http://192.168.9.62:8080/embed",
+                "url": "http://192.168.10.12:8080/embed",
             },
             "embedding_dims": 384
         }
