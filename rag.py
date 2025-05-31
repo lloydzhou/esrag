@@ -196,54 +196,72 @@ class Splitter:
                 }
             }
             
-            // Merge sentences into chunks
-            String currentChunk = '';
-            int chunkIndex = 0;
-            int startOffset = 0;
-            
-            for (int i = 0; i < validSentences.size(); i++) {
-                String sentence = (String)validSentences.get(i);
+            // If no successful split, use character-based chunking
+            if (validSentences.size() <= 1) {
+                String text = content.trim();
+                for (int i = 0; i < text.length(); i += (chunkSize - overlap)) {
+                    int end = (int)Math.min(i + chunkSize, text.length());
+                    String chunk = text.substring(i, end);
+                    Map chunkData = new HashMap();
+                    chunkData.put('content', chunk);
+                    Map metadata = new HashMap();
+                    metadata.put('index', chunks.size());
+                    metadata.put('offset', i);
+                    metadata.put('length', chunk.length());
+                    chunkData.put('metadata', metadata);
+                    chunks.add(chunkData);
+                    if (end >= text.length()) break;
+                }
+            } else {
+                // Merge sentences into chunks
+                String currentChunk = '';
+                int chunkIndex = 0;
+                int startOffset = 0;
                 
-                // Check if adding this sentence would exceed chunk size
-                if (currentChunk.length() > 0 && (currentChunk.length() + sentence.length() + 1) > chunkSize) {
-                    // Save current chunk
+                for (int i = 0; i < validSentences.size(); i++) {
+                    String sentence = (String)validSentences.get(i);
+                    
+                    // Check if adding this sentence would exceed chunk size
+                    if (currentChunk.length() > 0 && (currentChunk.length() + sentence.length() + 1) > chunkSize) {
+                        // Save current chunk
+                        Map chunkData = new HashMap();
+                        chunkData.put('content', currentChunk.trim());
+                        Map metadata = new HashMap();
+                        metadata.put('index', chunkIndex++);
+                        metadata.put('offset', startOffset);
+                        metadata.put('length', currentChunk.trim().length());
+                        chunkData.put('metadata', metadata);
+                        chunks.add(chunkData);
+                        
+                        // Calculate overlap for next chunk
+                        String overlapText = '';
+                        if (overlap > 0 && currentChunk.length() > overlap) {
+                            overlapText = currentChunk.substring(currentChunk.length() - overlap).trim() + ' ';
+                        }
+                        
+                        // Start new chunk
+                        startOffset += currentChunk.length() - overlapText.length();
+                        currentChunk = overlapText + sentence;
+                    } else {
+                        // Add sentence to current chunk
+                        if (currentChunk.length() > 0) {
+                            currentChunk += ' ';
+                        }
+                        currentChunk += sentence;
+                    }
+                }
+                
+                // Add final chunk if not empty
+                if (currentChunk.trim().length() > 0) {
                     Map chunkData = new HashMap();
                     chunkData.put('content', currentChunk.trim());
                     Map metadata = new HashMap();
-                    metadata.put('index', chunkIndex++);
+                    metadata.put('index', chunkIndex);
                     metadata.put('offset', startOffset);
                     metadata.put('length', currentChunk.trim().length());
                     chunkData.put('metadata', metadata);
                     chunks.add(chunkData);
-                    
-                    // Calculate overlap for next chunk
-                    String overlapText = '';
-                    if (overlap > 0 && currentChunk.length() > overlap) {
-                        overlapText = currentChunk.substring(currentChunk.length() - overlap).trim() + ' ';
-                    }
-                    
-                    // Start new chunk
-                    startOffset += currentChunk.length() - overlapText.length();
-                    currentChunk = overlapText + sentence;
-                } else {
-                    // Add sentence to current chunk
-                    if (currentChunk.length() > 0) {
-                        currentChunk += ' ';
-                    }
-                    currentChunk += sentence;
                 }
-            }
-            
-            // Add final chunk if not empty
-            if (currentChunk.trim().length() > 0) {
-                Map chunkData = new HashMap();
-                chunkData.put('content', currentChunk.trim());
-                Map metadata = new HashMap();
-                metadata.put('index', chunkIndex);
-                metadata.put('offset', startOffset);
-                metadata.put('length', currentChunk.trim().length());
-                chunkData.put('metadata', metadata);
-                chunks.add(chunkData);
             }
             
             ctx.chunks = chunks;
@@ -593,7 +611,7 @@ class Model:
 
     def _create_index_template(self):
         """Create an index template dedicated to the model"""
-        if self.client.client.indices.exists_template(name=self.template_name):
+        if self.client.client.indices.exists_index_template(name=self.template_name):
             logging.debug(f'Index template already exists: {self.template_name}')
             if not self.client.force_recreate:
                 return
@@ -602,61 +620,63 @@ class Model:
         
         template = {
             "index_patterns": [f"{self.model_id}__*"],
-            "mappings": {
-                "properties": {
-                    "name": {
-                        "type": "text",
-                        "analyzer": "ik_max_word"
-                    },
-                    "chunks": {
-                        "type": "nested",
-                        "properties": {
-                            "content": {
-                                "type": "text",
-                                "analyzer": "ik_max_word"
-                            },
-                            "metadata": {
-                                "properties": {
-                                    "index": {"type": "integer"},
-                                    "offset": {"type": "integer"},
-                                    "length": {"type": "integer"}
+            "template": {
+                "mappings": {
+                    "properties": {
+                        "name": {
+                            "type": "text",
+                            "analyzer": "ik_max_word"
+                        },
+                        "chunks": {
+                            "type": "nested",
+                            "properties": {
+                                "content": {
+                                    "type": "text",
+                                    "analyzer": "ik_max_word"
+                                },
+                                "metadata": {
+                                    "properties": {
+                                        "index": {"type": "integer"},
+                                        "offset": {"type": "integer"},
+                                        "length": {"type": "integer"}
+                                    }
+                                },
+                                "embedding": {
+                                    "type": "dense_vector",
+                                    "dims": dimensions,
+                                    "index": True,
+                                    "similarity": "dot_product"
                                 }
-                            },
-                            "embedding": {
-                                "type": "dense_vector",
-                                "dims": dimensions,
-                                "index": True,
-                                "similarity": "dot_product"
                             }
-                        }
-                    },
-                    "metadata": {
-                        "properties": {
-                            "enable": {"type": "integer"},
-                            "source": {"type": "keyword"},
-                            "category": {"type": "keyword"},
-                            "path": {"type": "keyword"}
-                        }
-                    },
-                    "attachment": {
-                        "properties": {
-                            "content": {"type": "text", "analyzer": "ik_max_word"},
-                            "title": {"type": "text", "analyzer": "ik_max_word"},
-                            "content_type": {"type": "keyword"}
-                        }
-                    },
-                }
-            },
-            "settings": {
-                "index": {
-                    "default_pipeline": self.pipeline_id,
-                    "number_of_replicas": 0,
+                        },
+                        "metadata": {
+                            "properties": {
+                                "enable": {"type": "integer"},
+                                "source": {"type": "keyword"},
+                                "category": {"type": "keyword"},
+                                "path": {"type": "keyword"}
+                            }
+                        },
+                        "attachment": {
+                            "properties": {
+                                "content": {"type": "text", "analyzer": "ik_max_word"},
+                                "title": {"type": "text", "analyzer": "ik_max_word"},
+                                "content_type": {"type": "keyword"}
+                            }
+                        },
+                    }
+                },
+                "settings": {
+                    "index": {
+                        "default_pipeline": self.pipeline_id,
+                        "number_of_replicas": 0,
+                    }
                 }
             }
         }
         
         try:
-            self.client.client.indices.put_template(
+            self.client.client.indices.put_index_template(
                 name=self.template_name,
                 body=template
             )
