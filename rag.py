@@ -24,8 +24,9 @@ class Client:
         self._collections = {}
         self._predefined_models = {}
         self._user = None
+        self.splitter = None
         self.force_recreate = force_recreate if force_recreate is not None else os.getenv("FORCE_RECREATE", "false").lower() == "true"
-        self._init_scripts()
+        self._init_spliter()
         self._load_existing_models()
 
     def add_user(self, username: str, api_key: str, metadata: Optional[Dict] = None) -> bool:
@@ -160,13 +161,22 @@ class Client:
         except Exception as e:
             logging.warning(f"Failed to load existing models: {e}")
 
-    def _init_scripts(self):
-        if self.client.get_script(id="text_splitter"):
-            logging.debug("Text splitting script already exists")
-            if not self.force_recreate:
-                return
-        """Initialize ES  script"""
-        script_source = """
+    def _init_spliter(self):
+        self.splitter = Splitter()
+        self.splitter.init_script(self.client, force_recreate=self.force_recreate)
+
+
+class Splitter:
+    """Default text splitter with configurable chunk size and overlap"""
+    
+    def __init__(self, chunk_size: int = 512, chunk_overlap: int = 16):
+        self.splitter_id = "text_splitter"
+        self.chunk_size = chunk_size
+        self.chunk_overlap = chunk_overlap
+    
+    def get_script_source(self) -> str:
+        """Return the Painless script source code for text splitting"""
+        return """
         if (ctx.attachment?.content != null) {
             String content = ctx.attachment.content;
             Map config = params.splitter_config;
@@ -186,91 +196,93 @@ class Client:
                 }
             }
             
-            // If no successful split, use character-based chunking
-            if (validSentences.size() <= 1) {
-                String text = content.trim();
-                for (int i = 0; i < text.length(); i += (chunkSize - overlap)) {
-                    int end = (int)Math.min(i + chunkSize, text.length());
-                    String chunk = text.substring(i, end);
-                    Map chunkData = new HashMap();
-                    chunkData.put('content', chunk);
-                    Map metadata = new HashMap();
-                    metadata.put('index', chunks.size());
-                    metadata.put('offset', i);
-                    metadata.put('length', chunk.length());
-                    chunkData.put('metadata', metadata);
-                    chunks.add(chunkData);
-                    if (end >= text.length()) break;
-                }
-            } else {
-                // Merge sentences into chunks
-                String currentChunk = '';
-                int chunkIndex = 0;
-                int startOffset = 0;
+            // Merge sentences into chunks
+            String currentChunk = '';
+            int chunkIndex = 0;
+            int startOffset = 0;
+            
+            for (int i = 0; i < validSentences.size(); i++) {
+                String sentence = (String)validSentences.get(i);
                 
-                for (int i = 0; i < validSentences.size(); i++) {
-                    String sentence = (String)validSentences.get(i);
-                    
-                    // Check if adding this sentence would exceed chunk size
-                    if (currentChunk.length() > 0 && (currentChunk.length() + sentence.length() + 1) > chunkSize) {
-                        // Save current chunk
-                        Map chunkData = new HashMap();
-                        chunkData.put('content', currentChunk.trim());
-                        Map metadata = new HashMap();
-                        metadata.put('index', chunkIndex++);
-                        metadata.put('offset', startOffset);
-                        metadata.put('length', currentChunk.trim().length());
-                        chunkData.put('metadata', metadata);
-                        chunks.add(chunkData);
-                        
-                        // Calculate overlap for next chunk
-                        String overlapText = '';
-                        if (overlap > 0 && currentChunk.length() > overlap) {
-                            overlapText = currentChunk.substring(currentChunk.length() - overlap).trim() + ' ';
-                        }
-                        
-                        // Start new chunk
-                        startOffset += currentChunk.length() - overlapText.length();
-                        currentChunk = overlapText + sentence;
-                    } else {
-                        // Add sentence to current chunk
-                        if (currentChunk.length() > 0) {
-                            currentChunk += ' ';
-                        }
-                        currentChunk += sentence;
-                    }
-                }
-                
-                // Add final chunk if not empty
-                if (currentChunk.trim().length() > 0) {
+                // Check if adding this sentence would exceed chunk size
+                if (currentChunk.length() > 0 && (currentChunk.length() + sentence.length() + 1) > chunkSize) {
+                    // Save current chunk
                     Map chunkData = new HashMap();
                     chunkData.put('content', currentChunk.trim());
                     Map metadata = new HashMap();
-                    metadata.put('index', chunkIndex);
+                    metadata.put('index', chunkIndex++);
                     metadata.put('offset', startOffset);
                     metadata.put('length', currentChunk.trim().length());
                     chunkData.put('metadata', metadata);
                     chunks.add(chunkData);
+                    
+                    // Calculate overlap for next chunk
+                    String overlapText = '';
+                    if (overlap > 0 && currentChunk.length() > overlap) {
+                        overlapText = currentChunk.substring(currentChunk.length() - overlap).trim() + ' ';
+                    }
+                    
+                    // Start new chunk
+                    startOffset += currentChunk.length() - overlapText.length();
+                    currentChunk = overlapText + sentence;
+                } else {
+                    // Add sentence to current chunk
+                    if (currentChunk.length() > 0) {
+                        currentChunk += ' ';
+                    }
+                    currentChunk += sentence;
                 }
+            }
+            
+            // Add final chunk if not empty
+            if (currentChunk.trim().length() > 0) {
+                Map chunkData = new HashMap();
+                chunkData.put('content', currentChunk.trim());
+                Map metadata = new HashMap();
+                metadata.put('index', chunkIndex);
+                metadata.put('offset', startOffset);
+                metadata.put('length', currentChunk.trim().length());
+                chunkData.put('metadata', metadata);
+                chunks.add(chunkData);
             }
             
             ctx.chunks = chunks;
         }
         """
-        
+    
+    def get_processor(self) -> Dict:
+        """Return the processor configuration for the pipeline"""
+        return {
+            "script": {
+                "id": self.splitter_id,
+                "params": {
+                    "splitter_config": {
+                        "chunk_size": self.chunk_size,
+                        "chunk_overlap": self.chunk_overlap,
+                    }
+                }
+            }
+        }
+
+    def init_script(self, es_client: Elasticsearch, force_recreate: bool = False):
+        """Initialize the script in Elasticsearch"""
+        if es_client.get_script(id=self.splitter_id):
+            logging.debug(f"Splitter script already exists: {self.splitter_id}")
+            if not force_recreate:
+                return
         try:
-            self.client.put_script(
-                id="text_splitter",
+            es_client.put_script(
+                id=self.splitter_id,
                 body={
                     "script": {
                         "lang": "painless",
-                        "source": script_source,
+                        "source": self.get_script_source(),
                     }
                 }
             )
-            logging.debug("Text splitting script initialized successfully")
+            logging.debug(f"Splitter script initialized successfully: {self.splitter_id}")
         except Exception as e:
-            logging.warning(f"Script initialization failed: {e}")
+            logging.warning(f"Splitter script initialization failed: {e}")
 
 
 class User:
@@ -493,14 +505,17 @@ class Model:
     
     def get_dimensions(self) -> int:
         """Get the dimensions of the embedding vector"""
-        return self.config.get("dimensions", 384)
+        return self.config.get("dimensions") or self.config.get("service_settings", {}).get("dimensions", 384)
     
     def _init_inference(self):
         """Initialize inference service"""
-        if self._exists or self.client.client.inference.get(inference_id=self.inference_id):
+        if self._exists or 'rate_limit' in self.config.get("service_settings", {}):
+            return
+        if self.client.client.inference.get(inference_id=self.inference_id):
             logging.debug(f'Inference service already exists: {self.inference_id}')
             if not self.client.force_recreate:
                 return
+
         try:
             self.client.client.inference.delete(inference_id=self.inference_id, force=True)
             response = self.client.client.inference.put(
@@ -533,17 +548,7 @@ class Model:
                     "ignore_missing": True
                 }
             },
-            {
-                "script": {
-                    "id": "text_splitter",
-                    "params": {
-                        "splitter_config": {
-                            "chunk_size": 512,
-                            "chunk_overlap": 16,
-                        }
-                    }
-                }
-            },
+            self.client.splitter.get_processor(),
             {
                 "foreach": {
                     "field": "chunks",
