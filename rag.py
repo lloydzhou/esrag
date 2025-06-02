@@ -175,92 +175,101 @@ class Splitter:
         self.chunk_overlap = chunk_overlap
     
     def get_script_source(self) -> str:
-        """Return the Painless script source code for text splitting"""
+        """Return the Elasticsearch Painless script source code for text splitting (not Java)"""
         return """
+        // Painless script implementing LangChain-style text splitting with sentence boundary awareness
         if (ctx.attachment?.content != null) {
             String content = ctx.attachment.content;
             Map config = params.splitter_config;
-            List chunks = new ArrayList();
             int chunkSize = config.chunk_size;
             int overlap = config.chunk_overlap;
+            List chunks = new ArrayList();
+
+            String text = content.trim();
+            int textLength = text.length();
             
-            // Simple split by common delimiters
-            String[] sentences = content.splitOnToken("\\\\s*[.!?。！？]\\\\s*|\\\\n\\\\n|\\\\s*[;；]\\\\s*");
-            
-            // Filter out empty sentences
-            List validSentences = new ArrayList();
-            for (String sentence : sentences) {
-                String trimmed = sentence.trim();
-                if (trimmed.length() > 0) {
-                    validSentences.add(trimmed);
-                }
-            }
-            
-            // If no successful split, use character-based chunking
-            if (validSentences.size() <= 1) {
-                String text = content.trim();
-                for (int i = 0; i < text.length(); i += (chunkSize - overlap)) {
-                    int end = (int)Math.min(i + chunkSize, text.length());
-                    String chunk = text.substring(i, end);
-                    Map chunkData = new HashMap();
-                    chunkData.put('content', chunk);
-                    Map metadata = new HashMap();
-                    metadata.put('index', chunks.size());
-                    metadata.put('offset', i);
-                    metadata.put('length', chunk.length());
-                    chunkData.put('metadata', metadata);
-                    chunks.add(chunkData);
-                    if (end >= text.length()) break;
-                }
+            if (textLength <= chunkSize) {
+                // Text fits in one chunk
+                Map data = new HashMap();
+                data.put("content", text);
+                Map meta = new HashMap();
+                meta.put("index", 0);
+                meta.put("offset", 0);
+                meta.put("length", textLength);
+                data.put("metadata", meta);
+                chunks.add(data);
             } else {
-                // Merge sentences into chunks
-                String currentChunk = '';
+                // Split into chunks preferring sentence/paragraph boundaries
+                int start = 0;
                 int chunkIndex = 0;
-                int startOffset = 0;
+                int minimumChunkSize = 20; // Prevent tiny chunks
                 
-                for (int i = 0; i < validSentences.size(); i++) {
-                    String sentence = (String)validSentences.get(i);
+                while (start < textLength) {
+                    int idealEnd = (int)Math.min(start + chunkSize, textLength);
+                    int actualEnd = idealEnd;
                     
-                    // Check if adding this sentence would exceed chunk size
-                    if (currentChunk.length() > 0 && (currentChunk.length() + sentence.length() + 1) > chunkSize) {
-                        // Save current chunk
-                        Map chunkData = new HashMap();
-                        chunkData.put('content', currentChunk.trim());
-                        Map metadata = new HashMap();
-                        metadata.put('index', chunkIndex++);
-                        metadata.put('offset', startOffset);
-                        metadata.put('length', currentChunk.trim().length());
-                        chunkData.put('metadata', metadata);
-                        chunks.add(chunkData);
-                        
-                        // Calculate overlap for next chunk
-                        String overlapText = '';
-                        if (overlap > 0 && currentChunk.length() > overlap) {
-                            overlapText = currentChunk.substring(currentChunk.length() - overlap).trim() + ' ';
+                    // If we're not at the end of text, try to find a better split point
+                    if (idealEnd < textLength) {
+                        // Look for paragraph breaks first (within 100 chars of ideal end)
+                        int searchStart = (int)Math.max(start + chunkSize - 100, start);
+                        int paragraphBreak = -1;
+                        for (int i = idealEnd - 1; i >= searchStart; i--) {
+                            if (i > 0 && text.charAt(i) == (char)10 && text.charAt(i-1) == (char)10) {
+                                paragraphBreak = i;
+                                break;
+                            }
                         }
                         
-                        // Start new chunk
-                        startOffset += currentChunk.length() - overlapText.length();
-                        currentChunk = overlapText + sentence;
-                    } else {
-                        // Add sentence to current chunk
-                        if (currentChunk.length() > 0) {
-                            currentChunk += ' ';
+                        if (paragraphBreak > 0) {
+                            actualEnd = paragraphBreak;
+                        } else {
+                            // Look for sentence endings (within 50 chars of ideal end)
+                            searchStart = (int)Math.max(start + chunkSize - 50, start);
+                            int sentenceEnd = -1;
+                            for (int i = idealEnd - 1; i >= searchStart; i--) {
+                                char c = text.charAt(i);
+                                if (c == 46 || c == 33 || c == 63) { // Check for '.', '!', '?'
+                                    // Check if followed by space or end of text
+                                    if (i + 1 >= textLength || text.charAt(i + 1) == 32) { // 32 is space
+                                        sentenceEnd = i + 1;
+                                        break;
+                                    }
+                                }
+                            }
+                            
+                            if (sentenceEnd > 0) {
+                                actualEnd = sentenceEnd;
+                            }
                         }
-                        currentChunk += sentence;
                     }
-                }
-                
-                // Add final chunk if not empty
-                if (currentChunk.trim().length() > 0) {
-                    Map chunkData = new HashMap();
-                    chunkData.put('content', currentChunk.trim());
-                    Map metadata = new HashMap();
-                    metadata.put('index', chunkIndex);
-                    metadata.put('offset', startOffset);
-                    metadata.put('length', currentChunk.trim().length());
-                    chunkData.put('metadata', metadata);
-                    chunks.add(chunkData);
+                    
+                    String chunk = text.substring(start, actualEnd).trim();
+                    
+                    if (chunk.length() >= minimumChunkSize) {
+                        Map data = new HashMap();
+                        data.put("content", chunk);
+                        Map meta = new HashMap();
+                        meta.put("index", chunkIndex);
+                        meta.put("offset", start);
+                        meta.put("length", chunk.length());
+                        data.put("metadata", meta);
+                        chunks.add(data);
+                        chunkIndex++;
+                    }
+                    
+                    // Move start position, accounting for overlap
+                    // Ensure we make meaningful progress (at least half the chunk size)
+                    int nextStart = actualEnd - overlap;
+                    int minAdvance = chunkSize / 2; // Half the chunk size, integer division
+                    if (nextStart < start + minAdvance) {
+                        nextStart = start + minAdvance;
+                    }
+                    start = nextStart;
+                    
+                    // Safety check to prevent infinite loop
+                    if (start >= textLength) {
+                        break;
+                    }
                 }
             }
             
