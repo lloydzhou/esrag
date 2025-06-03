@@ -177,7 +177,7 @@ class Splitter:
     def get_script_source(self) -> str:
         """Return the Elasticsearch Painless script source code for text splitting (not Java)"""
         return """
-        // Painless script implementing LangChain-style text splitting with sentence boundary awareness
+        // Painless script implementing text splitting with smart boundary detection
         if (ctx.attachment?.content != null) {
             String content = ctx.attachment.content;
             Map config = params.splitter_config;
@@ -199,53 +199,47 @@ class Splitter:
                 data.put("metadata", meta);
                 chunks.add(data);
             } else {
-                // Split into chunks preferring sentence/paragraph boundaries
+                // Split into chunks with smart boundary detection
                 int start = 0;
                 int chunkIndex = 0;
-                int minimumChunkSize = 20; // Prevent tiny chunks
                 
                 while (start < textLength) {
-                    int idealEnd = (int)Math.min(start + chunkSize, textLength);
-                    int actualEnd = idealEnd;
+                    int end = (int)Math.min(start + chunkSize, textLength);
                     
                     // If we're not at the end of text, try to find a better split point
-                    if (idealEnd < textLength) {
-                        // Look for paragraph breaks first (within 100 chars of ideal end)
-                        int searchStart = (int)Math.max(start + chunkSize - 100, start);
-                        int paragraphBreak = -1;
-                        for (int i = idealEnd - 1; i >= searchStart; i--) {
-                            if (i > 0 && text.charAt(i) == (char)10 && text.charAt(i-1) == (char)10) {
-                                paragraphBreak = i;
-                                break;
+                    if (end < textLength) {
+                        int bestEnd = end;
+                        
+                        // Look for sentence boundaries within last 30% of chunk
+                        int searchStart = start + (int)(chunkSize * 0.7);
+                        for (int i = end - 1; i >= searchStart; i--) {
+                            char c = text.charAt(i);
+                            if (c == 46 || c == 33 || c == 63) { // '.', '!', '?'
+                                // Check if followed by space and capital letter (sentence boundary)
+                                if (i + 1 < textLength && text.charAt(i + 1) == 32 && 
+                                    i + 2 < textLength && Character.isUpperCase(text.charAt(i + 2))) {
+                                    bestEnd = i + 1;
+                                    break;
+                                }
                             }
                         }
                         
-                        if (paragraphBreak > 0) {
-                            actualEnd = paragraphBreak;
-                        } else {
-                            // Look for sentence endings (within 50 chars of ideal end)
-                            searchStart = (int)Math.max(start + chunkSize - 50, start);
-                            int sentenceEnd = -1;
-                            for (int i = idealEnd - 1; i >= searchStart; i--) {
-                                char c = text.charAt(i);
-                                if (c == 46 || c == 33 || c == 63) { // Check for '.', '!', '?'
-                                    // Check if followed by space or end of text
-                                    if (i + 1 >= textLength || text.charAt(i + 1) == 32) { // 32 is space
-                                        sentenceEnd = i + 1;
-                                        break;
-                                    }
+                        // If no sentence boundary found, look for word boundaries (spaces)
+                        if (bestEnd == end) {
+                            for (int i = end - 1; i >= searchStart; i--) {
+                                if (text.charAt(i) == 32) { // space
+                                    bestEnd = i + 1;
+                                    break;
                                 }
                             }
-                            
-                            if (sentenceEnd > 0) {
-                                actualEnd = sentenceEnd;
-                            }
                         }
+                        
+                        end = bestEnd;
                     }
                     
-                    String chunk = text.substring(start, actualEnd).trim();
+                    String chunk = text.substring(start, end).trim();
                     
-                    if (chunk.length() >= minimumChunkSize) {
+                    if (chunk.length() > 0) {
                         Map data = new HashMap();
                         data.put("content", chunk);
                         Map meta = new HashMap();
@@ -257,14 +251,30 @@ class Splitter:
                         chunkIndex++;
                     }
                     
-                    // Move start position, accounting for overlap
-                    // Ensure we make meaningful progress (at least half the chunk size)
-                    int nextStart = actualEnd - overlap;
-                    int minAdvance = chunkSize / 2; // Half the chunk size, integer division
-                    if (nextStart < start + minAdvance) {
-                        nextStart = start + minAdvance;
+                    // Calculate next start position with overlap
+                    if (end >= textLength) {
+                        break; // We've reached the end
                     }
-                    start = nextStart;
+                    
+                    // Calculate overlap start position
+                    int overlapStart = end - overlap;
+                    if (overlapStart <= start) {
+                        // If overlap would not advance, just move forward minimally
+                        start = start + (chunkSize / 2);
+                    } else {
+                        // Try to find a good overlap boundary
+                        int nextStart = overlapStart;
+                        
+                        // Look for word boundary within overlap region
+                        for (int i = overlapStart; i < end && i >= overlapStart - 5; i++) {
+                            if (text.charAt(i) == 32) { // space
+                                nextStart = i + 1;
+                                break;
+                            }
+                        }
+                        
+                        start = nextStart;
+                    }
                     
                     // Safety check to prevent infinite loop
                     if (start >= textLength) {
