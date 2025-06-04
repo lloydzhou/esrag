@@ -19,7 +19,7 @@ class Client:
             **kwargs: Other ES connection parameters
         """
         self.hosts = hosts if isinstance(hosts, list) else [hosts]
-        self.client = Elasticsearch(self.hosts, **kwargs).options(ignore_status=404)
+        self.client = Elasticsearch(self.hosts, **kwargs).options(ignore_status=404, request_timeout=600)
         self.async_client = AsyncElasticsearch(self.hosts, **kwargs)
         self._collections = {}
         self._predefined_models = {}
@@ -881,9 +881,16 @@ class Collection:
                                 'document_name': doc['_source'].get('name', ''),
                                 'chunk_content': chunk['_source'].get('content', ''),
                                 'chunk_metadata': chunk['_source'].get('metadata', {}),
-                                'score': chunk['_score'],
+                                'score': [{
+                                    'search_type': search_type,
+                                    'score': chunk['_score'],
+                                }],
                                 'document_metadata': doc['_source'].get('metadata', {}),
-                                'search_type': search_type
+                            }
+                        else:
+                            all_chunk_data[chunk_key]['score'].append{
+                                'search_type': search_type,
+                                'score': chunk['_score'],
                             }
             
             search_results.append(chunk_results)
