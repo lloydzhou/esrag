@@ -888,10 +888,10 @@ class Collection:
                                 'document_metadata': doc['_source'].get('metadata', {}),
                             }
                         else:
-                            all_chunk_data[chunk_key]['score'].append{
+                            all_chunk_data[chunk_key]['score'].append({
                                 'search_type': search_type,
                                 'score': chunk['_score'],
-                            }
+                            })
             
             search_results.append(chunk_results)
         
