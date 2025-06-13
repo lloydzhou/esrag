@@ -1,3 +1,4 @@
+import re
 import logging
 from elasticsearch import Elasticsearch
 from typing import Dict
@@ -83,10 +84,12 @@ class JinaTextSegmenter:
             
             # 8. Quoted text, parenthetical phrases, or bracketed content (with length constraints)
             "(?:" +
-            f"(?<!\\w)\"\"\"[^\"]{{0,{self.MAX_QUOTED_TEXT_LENGTH}}}\"\"\"(?!\\w)" +
-            f"|(?<!\\w)(?:['\"`'\"])[^\\r\\n]{{0,{self.MAX_QUOTED_TEXT_LENGTH}}}\\1(?!\\w)" +
-            f"|(?<!\\w)`[^\\r\\n]{{0,{self.MAX_QUOTED_TEXT_LENGTH}}}'(?!\\w)" +
-            f"|(?<!\\w)``[^\\r\\n]{{0,{self.MAX_QUOTED_TEXT_LENGTH}}}''(?!\\w)" +
+            f"(?<!\\w)\"\"\"[^\"]{{0,{self.MAX_QUOTED_TEXT_LENGTH}}}\"\"\"(?!\\w)" +  # Triple quotes
+            # f"|(?<!\\w)(?:['\"`'\"])[^\\r\\n]{{0,{self.MAX_QUOTED_TEXT_LENGTH}}}\\1(?!\\w)" +  # not using \1 to avoid backreference issues in Painless
+            f"|(?<!\\w)'[^\\r\\n]{{0,{self.MAX_QUOTED_TEXT_LENGTH}}}'(?!\\w)" +       # Single quotes
+            f"|(?<!\\w)\"[^\\r\\n]{{0,{self.MAX_QUOTED_TEXT_LENGTH}}}\"(?!\\w)" +     # Double quotes
+            f"|(?<!\\w)`[^\\r\\n]{{0,{self.MAX_QUOTED_TEXT_LENGTH}}}`(?!\\w)" +       # Backticks
+            f"|(?<!\\w)``[^\\r\\n]{{0,{self.MAX_QUOTED_TEXT_LENGTH}}}''(?!\\w)" +     # Double backticks
             f"|\\([^\\r\\n()]{{0,{self.MAX_PARENTHETICAL_CONTENT_LENGTH}}}(?:\\([^\\r\\n()]{{0,{self.MAX_PARENTHETICAL_CONTENT_LENGTH}}}\\)[^\\r\\n()]{{0,{self.MAX_PARENTHETICAL_CONTENT_LENGTH}}}){{0,{self.MAX_NESTED_PARENTHESES}}}\\)" +
             f"|\\[[^\\r\\n\\[\\]]{{0,{self.MAX_PARENTHETICAL_CONTENT_LENGTH}}}(?:\\[[^\\r\\n\\[\\]]{{0,{self.MAX_PARENTHETICAL_CONTENT_LENGTH}}}\\][^\\r\\n\\[\\]]{{0,{self.MAX_PARENTHETICAL_CONTENT_LENGTH}}}){{0,{self.MAX_NESTED_PARENTHESES}}}\\]" +
             f"|\\$[^\\r\\n$]{{0,{self.MAX_MATH_INLINE_LENGTH}}}\\$" +
@@ -106,13 +109,26 @@ class JinaTextSegmenter:
             f"(?!{AVOID_AT_START}){_get_sentence_pattern(self.MAX_STANDALONE_LINE_LENGTH)}"
         ])
         # print('pattern', pattern)
-        return f"({pattern})"
+        return pattern
     
     def split_text(self, text: str):
         """Split text into segments based on the defined regex pattern"""
-        import re
         pattern = self.get_pattern()
-        return re.findall(pattern, text, flags=re.MULTILINE | re.DOTALL)
+        chunks, start = [], 0
+        for i, chunk in enumerate(re.findall(pattern, text, flags=re.MULTILINE | re.DOTALL)):
+            length = len(chunk)
+            chunk_data = {
+                "content": chunk,
+                "metadata": {
+                    "index": i,
+                    "length": length,
+                    "start": start,
+                    "end": start + length
+                },
+            }
+            start += length
+            chunks.append(chunk_data)
+        return chunks
 
 
 class Splitter:
@@ -140,7 +156,7 @@ class Splitter:
             return;
         }
 
-        Matcher matcher = /""" + self.segmenter.get_pattern() + """/msuU.matcher(text);
+        Matcher matcher = /(""" + self.segmenter.get_pattern() + """)/msuU.matcher(text);
         for (int i = 0; matcher.find(); i++) {
             String part = matcher.group();
             Map chunkData = new HashMap();
@@ -373,6 +389,24 @@ if __name__ == "__main__":
     print("=== Debugging Painless Script ===")
     if not splitter.debug_script(es, test_text):
         print("Script debugging failed, exiting...")
+        exit(1)
+
+    # Test python text segmentation
+    print("\n=== Testing Python Text Segmentation ===")
+    try:
+        chunks = splitter.segmenter.split_text(test_text)
+        print(f"Successfully split into {len(chunks)} chunks:")
+        for i, chunk in enumerate(chunks):  # Display first two chunks
+            print(f"\nChunk {i+1}:")
+            if isinstance(chunk, dict):
+                if 'metadata' in chunk:
+                    print(f"Metadata: {chunk['metadata']}")
+                print(f"Content : {chunk.get('content', chunk)}")
+            else:
+                print(f"Content : {chunk}")
+    except Exception as e:
+        logging.exception(e)
+        print(f"Python text segmentation failed: {e}")
         exit(1)
     
     # Test pipeline simulation
