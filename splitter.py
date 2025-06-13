@@ -114,21 +114,38 @@ class JinaTextSegmenter:
     def split_text(self, text: str):
         """Split text into segments based on the defined regex pattern"""
         pattern = self.get_pattern()
-        chunks, start = [], 0
-        for i, chunk in enumerate(re.findall(pattern, text, flags=re.MULTILINE | re.DOTALL)):
-            length = len(chunk)
-            chunk_data = {
-                "content": chunk,
-                "metadata": {
-                    "index": i,
-                    "length": length,
-                    "start": start,
-                    "end": start + length
-                },
+        chunks = [{
+            "content": match.group(),
+            "metadata": {
+                "index": i,
+                "length": len(match.group()),
+                "start": match.start(),
+                "end": match.end()
             }
-            start += length
-            chunks.append(chunk_data)
-        return chunks
+        } for i, match in enumerate(re.finditer(pattern, text, flags=re.MULTILINE | re.DOTALL))]
+        min_chunk_length, INF = self.MAX_SENTENCE_LENGTH // 2, 10000000
+        result, index = [], 0
+        for i, chunk in enumerate(chunks):
+            chunk_length = chunk['metadata']['length']
+            if chunk_length >= min_chunk_length:
+                chunk['metadata']['index'] = index
+                result.append(chunk)
+                index += 1
+            else:
+                left = result[-1] if result else None
+                right = chunks[i + 1] if i + 1 < len(chunks) else None
+                left_length = left['metadata']['length'] if left else INF
+                right_length = right['metadata']['length'] if right else INF
+                if left_length < INF or right_length < INF:
+                    if left_length <= right_length:
+                        left['content'] += chunk['content']
+                        left['metadata']['length'] += chunk_length
+                        left['metadata']['end'] = chunk['metadata']['end']
+                    else:
+                        right['content'] = chunk['content'] + right['content']
+                        right['metadata']['length'] += chunk_length
+                        right['metadata']['start'] = chunk['metadata']['start']
+        return result
 
 
 class Splitter:
@@ -170,7 +187,48 @@ class Splitter:
             chunks.add(chunkData);
         }
 
-        ctx.chunks = chunks;
+        // Merge small chunks logic
+        int minChunkLength = """ + str(self.segmenter.MAX_SENTENCE_LENGTH // 2) + """;
+        int INF = 10000000;
+        List result = new ArrayList();
+        int index = 0;
+        for (int i = 0; i < chunks.size(); i++) {
+            Map chunk = (Map) chunks.get(i);
+            Map metadata = (Map) chunk.get("metadata");
+            int chunkLength = (int) metadata.get("length");
+
+            if (chunkLength >= minChunkLength) {
+                metadata.put("index", index);
+                result.add(chunk);
+                index++;
+            } else {
+                // Current chunk is too small, need to merge
+                Map left = result.size() > 0 ? (Map) result.get(result.size() - 1) : null;
+                Map right = (i + 1) < chunks.size() ? (Map) chunks.get(i + 1) : null;
+                int leftLength = left != null ? (int) ((Map) left.get("metadata")).get("length") : INF;
+                int rightLength = right != null ? (int) ((Map) right.get("metadata")).get("length") : INF;
+                if (leftLength < INF || rightLength < INF) {
+                    if (leftLength <= rightLength) {
+                        // Merge to left
+                        String leftContent = (String) left.get("content");
+                        String currentContent = (String) chunk.get("content");
+                        left.put("content", leftContent + currentContent);
+                        Map leftMetadata = (Map) left.get("metadata");
+                        leftMetadata.put("length", leftLength + chunkLength);
+                        leftMetadata.put("end", metadata.get("end"));
+                    } else {
+                        // Merge to right
+                        String rightContent = (String) right.get("content");
+                        String currentContent = (String) chunk.get("content");
+                        right.put("content", currentContent + rightContent);
+                        Map rightMetadata = (Map) right.get("metadata");
+                        rightMetadata.put("length", rightLength + chunkLength);
+                        rightMetadata.put("start", metadata.get("start"));
+                    }
+                }
+            }
+        }
+        ctx.chunks = result;
         """
 
     def debug_script(self, es_client: Elasticsearch, test_content: str = None):
