@@ -51,6 +51,7 @@ Examples:
   elasticrag --host localhost:9200 -u admin -k secret list-models
   elasticrag search "your query" my_collection my_model
   elasticrag add document.pdf -c my_collection -m my_model
+  elasticrag server --port 7860
 
 Environment variables:
   ELASTICSEARCH_HOST     Elasticsearch host (default: http://localhost:9200)
@@ -58,6 +59,8 @@ Environment variables:
   ELASTICRAG_API_KEY     API key for authentication (default: test_api_key)
   TEXT_EMBEDDING_URL     Text embedding service URL
   TEXT_EMBEDDING_API_KEY Text embedding API key
+  ELASTICRAG_ADMIN_USERNAME  Admin username for web interface (default: admin)
+  ELASTICRAG_ADMIN_PASSWORD  Admin password for web interface (default: admin123)
         """
     )
     
@@ -120,6 +123,34 @@ Environment variables:
     search_parser.add_argument("-c", "--collection", help="Collection name")
     search_parser.add_argument("-m", "--model", help="Model ID")
     search_parser.add_argument("-s", "--size", type=int, default=5, help="Number of results to return")
+    
+    # server command
+    server_parser = subparsers.add_parser("server", help="Start Gradio web interface")
+    server_parser.add_argument(
+        "--port", 
+        type=int, 
+        default=7860, 
+        help="Port for web interface (default: 7860)"
+    )
+    server_parser.add_argument(
+        "--host", 
+        default="http://0.0.0.0:9200", 
+        help="Host for web interface (default: http://0.0.0.0:9200)"
+    )
+    server_parser.add_argument(
+        "--share", 
+        action="store_true", 
+        default=False,
+        help="Create public link via Gradio share"
+    )
+    server_parser.add_argument(
+        "--admin-username",
+        help="Admin username (overrides ELASTICRAG_ADMIN_USERNAME)"
+    )
+    server_parser.add_argument(
+        "--admin-password",
+        help="Admin password (overrides ELASTICRAG_ADMIN_PASSWORD)"
+    )
     
     return parser
 
@@ -331,6 +362,40 @@ async def async_main():
         except Exception as e:
             print(f"Search failed: {e}")
             
+    elif args.command == "server":
+        # Start Gradio web interface
+        admin_username = (
+            args.admin_username or 
+            get_config_value("ELASTICRAG_ADMIN_USERNAME", "admin")
+        )
+        admin_password = (
+            args.admin_password or 
+            get_config_value("ELASTICRAG_ADMIN_PASSWORD", "admin123")
+        )
+        
+        print(f"Starting ElasticRAG web interface...")
+        print(f"Elasticsearch: {es_host}")
+        print(f"Admin username: {admin_username}")
+        print(f"Web interface: http://{args.host}:{args.port}")
+        
+        try:
+            # Check if gradio is available
+            try:
+                import gradio
+            except ImportError:
+                print("\n❌ Error: Gradio is not installed.")
+                print("Web interface requires gradio. Install it with:")
+                print("  uv add 'elasticrag[web]'")
+                print("  # or")
+                print("  uv add gradio pandas")
+                return
+            
+            from .server import create_server
+            server = create_server(client, admin_username, admin_password)
+            server.launch(host=args.host, port=args.port, share=args.share)
+        except Exception as e:
+            print(f"Failed to start web interface: {e}")
+    
     else:
         print(f"Unknown command: {args.command}")
         usage()
@@ -349,7 +414,6 @@ def main():
             import traceback
             traceback.print_exc()
         sys.exit(1)
-
 
 if __name__ == "__main__":
     main()
