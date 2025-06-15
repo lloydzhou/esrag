@@ -64,6 +64,37 @@ class ElasticRAGServer:
         self.is_admin = False
         return "已退出登录", {}
     
+    def get_collection_choices(self) -> List[str]:
+        """Get collection choices for dropdown"""
+        if not self.current_user or self.is_admin:
+            return []
+        
+        try:
+            collections = self.client.list_collections()
+            return [collection['name'] for collection in collections] if collections else []
+        except Exception:
+            return []
+    
+    def get_model_choices(self) -> List[str]:
+        """Get model choices for dropdown"""
+        try:
+            models = self.client.list_models()
+            return [model['model_id'] for model in models] if models else []
+        except Exception:
+            return []
+    
+    def get_document_choices(self, collection_name: str, model_id: str = None) -> List[str]:
+        """Get document choices for dropdown"""
+        if not self.current_user or self.is_admin or not collection_name:
+            return []
+        
+        try:
+            collection = self.client.get_collection(collection_name, model_id)
+            documents_info = collection.list_documents(limit=100)
+            return [doc['id'] for doc in documents_info['documents']] if documents_info['total'] > 0 else []
+        except Exception:
+            return []
+
     # Admin functions
     def list_all_users(self) -> pd.DataFrame:
         """List all users (admin only)"""
@@ -295,125 +326,253 @@ class ElasticRAGServer:
             # Login state
             user_state = gr.State({})
             
-            with gr.Row():
-                with gr.Column(scale=1):
-                    gr.Markdown("### 登录")
-                    username_input = gr.Textbox(label="用户名", placeholder="输入用户名")
-                    password_input = gr.Textbox(label="密码", type="password", placeholder="输入密码")
-                    login_btn = gr.Button("登录", variant="primary")
-                    logout_btn = gr.Button("退出", variant="secondary")
-                    login_status = gr.Markdown("请登录以使用系统")
+            # Login form - will be hidden after login
+            with gr.Group(visible=True) as login_form:
+                with gr.Row():
+                    with gr.Column(scale=1):
+                        gr.Markdown("### 登录")
+                        username_input = gr.Textbox(label="用户名", placeholder="输入用户名")
+                        password_input = gr.Textbox(label="密码", type="password", placeholder="输入密码")
+                        with gr.Row():
+                            login_btn = gr.Button("登录", variant="primary")
+                        login_status = gr.Markdown("请登录以使用系统")
             
-            # Admin interface
-            with gr.Tab("管理员功能", visible=False) as admin_tab:
-                gr.Markdown("### 👥 用户管理")
-                
+            # Main interface - will be shown after login
+            with gr.Group(visible=False) as main_interface:
                 with gr.Row():
-                    with gr.Column():
-                        refresh_users_btn = gr.Button("刷新用户列表", variant="secondary")
-                        users_table = gr.DataFrame(label="用户列表")
-                    
-                    with gr.Column():
-                        gr.Markdown("#### 添加新用户")
-                        new_username = gr.Textbox(label="用户名")
-                        new_api_key = gr.Textbox(label="API密钥")
-                        new_email = gr.Textbox(label="邮箱")
-                        new_role = gr.Textbox(label="角色")
-                        add_user_btn = gr.Button("添加用户", variant="primary")
-                        add_user_result = gr.Textbox(label="结果", interactive=False)
+                    with gr.Column(scale=4):
+                        user_info_display = gr.Markdown("", visible=False)
+                    with gr.Column(scale=1):
+                        logout_btn = gr.Button("退出", variant="secondary")
+                
+                # Tab interface for all functions
+                with gr.Tabs() as main_tabs:
+                    # Admin tabs
+                    with gr.Tab("用户管理", visible=False) as user_mgmt_tab:
+                        gr.Markdown("### 👥 用户管理")
                         
-                        gr.Markdown("#### 删除用户")
-                        delete_username = gr.Textbox(label="要删除的用户名")
-                        delete_user_btn = gr.Button("删除用户", variant="stop")
-                        delete_user_result = gr.Textbox(label="结果", interactive=False)
-                
-                gr.Markdown("### 🤖 模型管理")
-                
-                with gr.Row():
-                    with gr.Column():
-                        refresh_models_btn = gr.Button("刷新模型列表", variant="secondary")
-                        models_table = gr.DataFrame(label="模型列表")
+                        with gr.Row():
+                            with gr.Column():
+                                refresh_users_btn = gr.Button("刷新用户列表", variant="secondary")
+                                users_table = gr.DataFrame(label="用户列表")
+                            
+                            with gr.Column():
+                                gr.Markdown("#### 添加新用户")
+                                new_username = gr.Textbox(label="用户名")
+                                new_api_key = gr.Textbox(label="API密钥")
+                                new_email = gr.Textbox(label="邮箱")
+                                new_role = gr.Textbox(label="角色")
+                                add_user_btn = gr.Button("添加用户", variant="primary")
+                                add_user_result = gr.Textbox(label="结果", interactive=False)
+                                
+                                gr.Markdown("#### 删除用户")
+                                delete_username = gr.Textbox(label="要删除的用户名")
+                                delete_user_btn = gr.Button("删除用户", variant="stop")
+                                delete_user_result = gr.Textbox(label="结果", interactive=False)
                     
-                    with gr.Column():
-                        gr.Markdown("#### 添加新模型")
-                        new_model_id = gr.Textbox(label="模型ID")
-                        new_service = gr.Dropdown(
-                            choices=["hugging_face", "openai", "elasticsearch"],
-                            label="服务类型",
-                            value="hugging_face"
-                        )
-                        new_model_api_key = gr.Textbox(label="API密钥")
-                        new_model_url = gr.Textbox(label="服务URL")
-                        new_dimensions = gr.Number(label="向量维度", value=384)
-                        add_model_btn = gr.Button("添加模型", variant="primary")
-                        add_model_result = gr.Textbox(label="结果", interactive=False)
-            
-            # User interface
-            with gr.Tab("用户功能", visible=False) as user_tab:
-                gr.Markdown("### 📚 集合管理")
-                
-                with gr.Row():
-                    refresh_collections_btn = gr.Button("刷新集合列表", variant="secondary")
-                    collections_table = gr.DataFrame(label="我的集合")
-                
-                gr.Markdown("### 📄 文档管理")
-                
-                with gr.Row():
-                    with gr.Column():
-                        collection_select = gr.Textbox(label="集合名称", placeholder="输入集合名称")
-                        model_select = gr.Textbox(label="模型ID（可选）", placeholder="留空使用默认模型")
-                        refresh_docs_btn = gr.Button("刷新文档列表", variant="secondary")
-                        documents_table = gr.DataFrame(label="文档列表")
-                    
-                    with gr.Column():
-                        gr.Markdown("#### 添加文本文档")
-                        doc_collection = gr.Textbox(label="集合名称")
-                        doc_model = gr.Textbox(label="模型ID（可选）")
-                        doc_name = gr.Textbox(label="文档名称")
-                        doc_content = gr.Textbox(label="文档内容", lines=5)
-                        add_doc_btn = gr.Button("添加文档", variant="primary")
-                        add_doc_result = gr.Textbox(label="结果", interactive=False)
+                    with gr.Tab("模型管理", visible=False) as model_mgmt_tab:
+                        gr.Markdown("### 🤖 模型管理")
                         
-                        gr.Markdown("#### 删除文档")
-                        delete_doc_collection = gr.Textbox(label="集合名称")
-                        delete_doc_model = gr.Textbox(label="模型ID（可选）")
-                        delete_doc_id = gr.Textbox(label="文档ID")
-                        delete_doc_btn = gr.Button("删除文档", variant="stop")
-                        delete_doc_result = gr.Textbox(label="结果", interactive=False)
-                
-                gr.Markdown("### 🔍 搜索调试")
-                
-                with gr.Row():
-                    with gr.Column():
-                        search_collection = gr.Textbox(label="集合名称")
-                        search_model = gr.Textbox(label="模型ID（可选）")
-                        search_query = gr.Textbox(label="搜索查询")
-                        search_size = gr.Slider(label="返回结果数", minimum=1, maximum=20, value=5)
-                        search_btn = gr.Button("搜索", variant="primary")
+                        with gr.Row():
+                            with gr.Column():
+                                refresh_models_btn = gr.Button("刷新模型列表", variant="secondary")
+                                models_table = gr.DataFrame(label="模型列表")
+                            
+                            with gr.Column():
+                                gr.Markdown("#### 添加新模型")
+                                new_model_id = gr.Textbox(label="模型ID")
+                                new_service = gr.Dropdown(
+                                    choices=["hugging_face", "openai", "elasticsearch"],
+                                    label="服务类型",
+                                    value="hugging_face"
+                                )
+                                new_model_api_key = gr.Textbox(label="API密钥")
+                                new_model_url = gr.Textbox(label="服务URL")
+                                new_dimensions = gr.Number(label="向量维度", value=384)
+                                add_model_btn = gr.Button("添加模型", variant="primary")
+                                add_model_result = gr.Textbox(label="结果", interactive=False)
                     
-                    with gr.Column():
-                        search_results = gr.DataFrame(label="搜索结果")
+                    # User tabs
+                    with gr.Tab("集合管理", visible=False) as collection_mgmt_tab:
+                        gr.Markdown("### 📚 集合管理")
+                        
+                        with gr.Row():
+                            refresh_collections_btn = gr.Button("刷新集合列表", variant="secondary")
+                            collections_table = gr.DataFrame(label="我的集合")
+                        
+                        gr.Markdown("### 📄 文档管理")
+                        
+                        with gr.Row():
+                            with gr.Column():
+                                collection_select = gr.Dropdown(
+                                    label="集合名称", 
+                                    choices=[],
+                                    allow_custom_value=True,
+                                    value=None
+                                )
+                                model_select = gr.Dropdown(
+                                    label="模型ID（可选）", 
+                                    choices=[],
+                                    allow_custom_value=True,
+                                    value=None
+                                )
+                                refresh_docs_btn = gr.Button("刷新文档列表", variant="secondary")
+                                documents_table = gr.DataFrame(label="文档列表")
+                            
+                            with gr.Column():
+                                gr.Markdown("#### 添加文本文档")
+                                doc_collection = gr.Dropdown(
+                                    label="集合名称",
+                                    choices=[],
+                                    allow_custom_value=True,
+                                    value=None
+                                )
+                                doc_model = gr.Dropdown(
+                                    label="模型ID（可选）",
+                                    choices=[],
+                                    allow_custom_value=True,
+                                    value=None
+                                )
+                                doc_name = gr.Textbox(label="文档名称")
+                                doc_content = gr.Textbox(label="文档内容", lines=5)
+                                add_doc_btn = gr.Button("添加文档", variant="primary")
+                                add_doc_result = gr.Textbox(label="结果", interactive=False)
+                                
+                                gr.Markdown("#### 删除文档")
+                                delete_doc_collection = gr.Dropdown(
+                                    label="集合名称",
+                                    choices=[],
+                                    allow_custom_value=True,
+                                    value=None
+                                )
+                                delete_doc_model = gr.Dropdown(
+                                    label="模型ID（可选）",
+                                    choices=[],
+                                    allow_custom_value=True,
+                                    value=None
+                                )
+                                delete_doc_id = gr.Dropdown(
+                                    label="文档ID",
+                                    choices=[],
+                                    allow_custom_value=True,
+                                    value=None
+                                )
+                                delete_doc_btn = gr.Button("删除文档", variant="stop")
+                                delete_doc_result = gr.Textbox(label="结果", interactive=False)
+                    
+                    with gr.Tab("搜索调试", visible=False) as search_debug_tab:
+                        gr.Markdown("### 🔍 搜索调试")
+                        
+                        with gr.Row():
+                            with gr.Column():
+                                search_collection = gr.Dropdown(
+                                    label="集合名称",
+                                    choices=[],
+                                    allow_custom_value=True,
+                                    value=None
+                                )
+                                search_model = gr.Dropdown(
+                                    label="模型ID（可选）",
+                                    choices=[],
+                                    allow_custom_value=True,
+                                    value=None
+                                )
+                                search_query = gr.Textbox(label="搜索查询")
+                                search_size = gr.Slider(label="返回结果数", minimum=1, maximum=20, value=5)
+                                search_btn = gr.Button("搜索", variant="primary")
+                            
+                            with gr.Column():
+                                search_results = gr.DataFrame(label="搜索结果")
             
             # Event handlers
             def handle_login(username, password):
                 success, message, user_info = self.authenticate_user(username, password)
                 if success:
                     is_admin = user_info.get('role') == 'admin'
-                    status_msg = f"✅ {message}"
+                    user_display = f"**当前用户:** {user_info['username']} ({user_info['role']})"
+                    
+                    # Get dropdown choices
+                    collection_choices = self.get_collection_choices() if not is_admin else []
+                    model_choices = self.get_model_choices()
+                    
                     return (
-                        status_msg,
-                        user_info,
-                        gr.update(visible=is_admin),  # admin_tab
-                        gr.update(visible=not is_admin),  # user_tab
+                        gr.update(visible=False),  # login_form
+                        gr.update(visible=True),   # main_interface
+                        user_display,              # user_info_display
+                        gr.update(visible=True),   # user_info_display visibility
+                        user_info,                 # user_state
+                        gr.update(visible=is_admin),  # user_mgmt_tab
+                        gr.update(visible=is_admin),  # model_mgmt_tab
+                        gr.update(visible=not is_admin),  # collection_mgmt_tab
+                        gr.update(visible=not is_admin),  # search_debug_tab
+                        gr.update(choices=collection_choices),  # collection_select
+                        gr.update(choices=model_choices),  # model_select
+                        gr.update(choices=collection_choices),  # doc_collection
+                        gr.update(choices=model_choices),  # doc_model
+                        gr.update(choices=collection_choices),  # delete_doc_collection
+                        gr.update(choices=model_choices),  # delete_doc_model
+                        gr.update(choices=collection_choices),  # search_collection
+                        gr.update(choices=model_choices),  # search_model
                         "",  # clear username
                         ""   # clear password
                     )
                 else:
-                    return f"❌ {message}", {}, gr.update(visible=False), gr.update(visible=False), username, password
+                    return (
+                        gr.update(visible=True),   # login_form stays visible
+                        gr.update(visible=False),  # main_interface
+                        "",                        # user_info_display
+                        gr.update(visible=False),  # user_info_display visibility
+                        {},                        # user_state
+                        gr.update(visible=False),  # user_mgmt_tab
+                        gr.update(visible=False),  # model_mgmt_tab
+                        gr.update(visible=False),  # collection_mgmt_tab
+                        gr.update(visible=False),  # search_debug_tab
+                        gr.update(choices=[]),  # collection_select
+                        gr.update(choices=[]),  # model_select
+                        gr.update(choices=[]),  # doc_collection
+                        gr.update(choices=[]),  # doc_model
+                        gr.update(choices=[]),  # delete_doc_collection
+                        gr.update(choices=[]),  # delete_doc_model
+                        gr.update(choices=[]),  # search_collection
+                        gr.update(choices=[]),  # search_model
+                        username,                  # keep username
+                        password                   # keep password
+                    )
             
             def handle_logout():
                 message, user_info = self.logout_user()
-                return f"ℹ️ {message}", user_info, gr.update(visible=False), gr.update(visible=False)
+                return (
+                    gr.update(visible=True),   # login_form
+                    gr.update(visible=False),  # main_interface
+                    "",                        # user_info_display
+                    gr.update(visible=False),  # user_info_display visibility
+                    user_info,                 # user_state
+                    gr.update(visible=False),  # user_mgmt_tab
+                    gr.update(visible=False),  # model_mgmt_tab
+                    gr.update(visible=False),  # collection_mgmt_tab
+                    gr.update(visible=False),  # search_debug_tab
+                    f"ℹ️ {message}"            # login_status
+                )
+            
+            def update_document_choices(collection_name, model_id):
+                """Update document choices when collection changes"""
+                doc_choices = self.get_document_choices(collection_name, model_id)
+                return gr.update(choices=doc_choices)
+            
+            def refresh_dropdown_choices():
+                """Refresh all dropdown choices"""
+                collection_choices = self.get_collection_choices()
+                model_choices = self.get_model_choices()
+                return (
+                    gr.update(choices=collection_choices),  # collection_select
+                    gr.update(choices=model_choices),       # model_select
+                    gr.update(choices=collection_choices),  # doc_collection
+                    gr.update(choices=model_choices),       # doc_model
+                    gr.update(choices=collection_choices),  # delete_doc_collection
+                    gr.update(choices=model_choices),       # delete_doc_model
+                    gr.update(choices=collection_choices),  # search_collection
+                    gr.update(choices=model_choices),       # search_model
+                )
             
             # Async wrapper for search
             def search_wrapper(collection_name, model_id, query, size):
@@ -423,38 +582,43 @@ class ElasticRAGServer:
             login_btn.click(
                 handle_login,
                 inputs=[username_input, password_input],
-                outputs=[login_status, user_state, admin_tab, user_tab, username_input, password_input]
+                outputs=[
+                    login_form, main_interface, user_info_display, user_info_display,
+                    user_state, user_mgmt_tab, model_mgmt_tab, collection_mgmt_tab, search_debug_tab,
+                    collection_select, model_select, doc_collection, doc_model,
+                    delete_doc_collection, delete_doc_model, search_collection, search_model,
+                    username_input, password_input
+                ]
             )
             
             logout_btn.click(
                 handle_logout,
-                outputs=[login_status, user_state, admin_tab, user_tab]
+                outputs=[
+                    login_form, main_interface, user_info_display, user_info_display,
+                    user_state, user_mgmt_tab, model_mgmt_tab, collection_mgmt_tab, search_debug_tab,
+                    login_status
+                ]
             )
             
-            # Admin events
-            refresh_users_btn.click(self.list_all_users, outputs=users_table)
-            refresh_models_btn.click(self.list_all_models, outputs=models_table)
-            
-            add_user_btn.click(
-                self.add_new_user,
-                inputs=[new_username, new_api_key, new_email, new_role],
-                outputs=add_user_result
+            # Refresh dropdown choices when collections or documents change
+            refresh_collections_btn.click(
+                lambda: (self.list_user_collections(), *refresh_dropdown_choices()),
+                outputs=[collections_table, collection_select, model_select, doc_collection, doc_model,
+                        delete_doc_collection, delete_doc_model, search_collection, search_model]
             )
             
-            delete_user_btn.click(
-                self.delete_user,
-                inputs=delete_username,
-                outputs=delete_user_result
+            # Update document choices when collection selection changes
+            collection_select.change(
+                update_document_choices,
+                inputs=[collection_select, model_select],
+                outputs=delete_doc_id
             )
             
-            add_model_btn.click(
-                self.add_new_model,
-                inputs=[new_model_id, new_service, new_model_api_key, new_model_url, new_dimensions],
-                outputs=add_model_result
+            delete_doc_collection.change(
+                update_document_choices,
+                inputs=[delete_doc_collection, delete_doc_model],
+                outputs=delete_doc_id
             )
-            
-            # User events
-            refresh_collections_btn.click(self.list_user_collections, outputs=collections_table)
             
             refresh_docs_btn.click(
                 self.list_collection_documents,
@@ -485,8 +649,7 @@ class ElasticRAGServer:
     def launch(self, host: str = "0.0.0.0", port: int = 7860, share: bool = False):
         """Launch the Gradio interface"""
         app = self.create_interface()
-        app.launch(server_port=port)
-        # app.launch(server_name=host, server_port=port, share=share)
+        app.launch(server_name=host, server_port=port, share=share)
 
 
 def create_server(client: Client, admin_username: str = None, admin_password: str = None) -> ElasticRAGServer:

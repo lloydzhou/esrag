@@ -392,7 +392,7 @@ async def async_main():
             
             from .server import create_server
             server = create_server(client, admin_username, admin_password)
-            server.launch(host=args.host, port=args.port, share=args.share)
+            server.launch(port=args.port, share=args.share)
         except Exception as e:
             print(f"Failed to start web interface: {e}")
     
