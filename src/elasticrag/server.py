@@ -25,6 +25,24 @@ def check_web_dependencies():
         )
 
 
+def get_event_loop():
+    """Get the current event loop or create a new one if needed"""
+    try:
+        return asyncio.get_event_loop()
+    except RuntimeError:
+        # No event loop is running, create a new one
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        return loop
+
+def syncify(func):
+    """Decorator to run async functions in a synchronous context"""
+    def wrapper(*args, **kwargs):
+        loop = get_event_loop()
+        return loop.run_until_complete(func(*args, **kwargs))
+    return wrapper
+
+
 class ElasticRAGServer:
     """Gradio-based management interface for ElasticRAG"""
     
@@ -574,9 +592,9 @@ class ElasticRAGServer:
                     gr.update(choices=model_choices),       # search_model
                 )
             
-            # Async wrapper for search
+            # Async wrapper for search - handle existing event loop
             def search_wrapper(collection_name, model_id, query, size):
-                return asyncio.run(self.search_documents(collection_name, model_id, query, size))
+                return syncify(self.search_documents)(collection_name, model_id, query, size)
             
             # Connect events
             login_btn.click(
