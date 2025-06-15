@@ -600,7 +600,29 @@ class ElasticRAGServer:
                 ]
             )
             
-            # Refresh dropdown choices when collections or documents change
+            # Admin events
+            refresh_users_btn.click(self.list_all_users, outputs=[users_table])
+            refresh_models_btn.click(self.list_all_models, outputs=[models_table])
+            
+            add_user_btn.click(
+                self.add_new_user,
+                inputs=[new_username, new_api_key, new_email, new_role],
+                outputs=[add_user_result]
+            )
+            
+            delete_user_btn.click(
+                self.delete_user,
+                inputs=[delete_username],
+                outputs=[delete_user_result]
+            )
+            
+            add_model_btn.click(
+                self.add_new_model,
+                inputs=[new_model_id, new_service, new_model_api_key, new_model_url, new_dimensions],
+                outputs=[add_model_result]
+            )
+            
+            # User events - 修复刷新集合事件
             refresh_collections_btn.click(
                 lambda: (self.list_user_collections(), *refresh_dropdown_choices()),
                 outputs=[collections_table, collection_select, model_select, doc_collection, doc_model,
@@ -611,37 +633,37 @@ class ElasticRAGServer:
             collection_select.change(
                 update_document_choices,
                 inputs=[collection_select, model_select],
-                outputs=delete_doc_id
+                outputs=[delete_doc_id]
             )
             
             delete_doc_collection.change(
                 update_document_choices,
                 inputs=[delete_doc_collection, delete_doc_model],
-                outputs=delete_doc_id
+                outputs=[delete_doc_id]
             )
             
             refresh_docs_btn.click(
                 self.list_collection_documents,
                 inputs=[collection_select, model_select],
-                outputs=documents_table
+                outputs=[documents_table]
             )
             
             add_doc_btn.click(
                 self.add_text_document,
                 inputs=[doc_collection, doc_model, doc_name, doc_content],
-                outputs=add_doc_result
+                outputs=[add_doc_result]
             )
             
             delete_doc_btn.click(
                 self.delete_document,
                 inputs=[delete_doc_collection, delete_doc_model, delete_doc_id],
-                outputs=delete_doc_result
+                outputs=[delete_doc_result]
             )
             
             search_btn.click(
                 search_wrapper,
                 inputs=[search_collection, search_model, search_query, search_size],
-                outputs=search_results
+                outputs=[search_results]
             )
         
         return app
