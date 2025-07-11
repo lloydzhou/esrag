@@ -325,7 +325,6 @@ class Splitter:
         List chunks = new ArrayList();
         // Ensure ctx, attachment, and content are valid
         if (ctx == null || ctx.attachment == null || ctx.attachment.content == null) {
-            if (ctx != null) { ctx.chunks = chunks } // Ensure chunks is always initialized
             return; 
         }
         String text = ctx.attachment.content;

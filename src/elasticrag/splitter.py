@@ -131,7 +131,6 @@ class Splitter:
         return """
         List chunks = new ArrayList();
         if (ctx == null || ctx.attachment == null || ctx.attachment.content == null) {
-            if (ctx != null) { ctx.chunks = chunks }
             return; 
         }
         String text = ctx.attachment.content;

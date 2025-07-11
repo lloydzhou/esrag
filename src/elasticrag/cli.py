@@ -357,9 +357,11 @@ async def async_main():
             for i, result in enumerate(results, 1):
                 print(f"{i}. Document: {result['document_name']}")
                 print(f"   Content: {result['chunk_content'][:200]}...")
-                print(f"   Score: {result.get('final_score', result['score']):.4f}")
+                print(f"   Score: {result.get('score')}")
+                print(f"RRFScore: {result.get('rrf_score'):.4f}")
                 print("-" * 30)
         except Exception as e:
+            logging.exception(e)
             print(f"Search failed: {e}")
             
     elif args.command == "server":
