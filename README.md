@@ -1,186 +1,270 @@
-# Simple RAG System with Elasticsearch
+# ElasticRAG
 
-A minimal RAG (Retrieval-Augmented Generation) system using Elasticsearch's ingest attachment and HuggingFace text embedding capabilities.
+ElasticRAG 是一个基于 Elasticsearch 的 RAG（Retrieval-Augmented Generation）系统，充分利用 Elasticsearch 的 ingest pipeline 功能来处理整个 RAG 工作流。
 
-## Features
+## 特性
 
-- Document ingestion with automatic content extraction using attachment processor
-- Text embedding generation using HuggingFace text-embeddings-inference API (CPU version)
-- Hybrid search combining BM25 and vector similarity using RRF (Reciprocal Rank Fusion)
-- Support for various document formats (PDF, DOC, TXT, etc.)
-- Docker-based deployment with Elasticsearch 8.17 and HuggingFace embedding service
-- Uses BAAI/bge-small-en-v1.5 model with HF_MIRROR support for China users
+- 🔍 基于 Elasticsearch 的向量搜索和文本搜索
+- 🛠️ 使用 ingest pipeline 进行文档处理和向量化
+- 👥 多用户支持和认证
+- 🧠 多模型支持（OpenAI、HuggingFace 等）
+- 📚 知识库（Collection）管理
+- 🔄 混合搜索和 RRF（Reciprocal Rank Fusion）算法
+- 📄 支持多种文档格式的文本分割
+- ⚙️ 支持环境变量配置和命令行参数
+- 🌐 可选的 Web 管理界面
 
-## Quick Start with Docker
+## 安装
 
-1. Install dependencies:
+### 基础安装
+
+仅安装核心功能（CLI 命令行工具）：
+
 ```bash
-pip install -r requirements.txt
+uv add elasticrag
 ```
 
-2. (For China users) Set HuggingFace mirror before starting services:
+### 完整安装
+
+包含 Web 管理界面：
+
 ```bash
-export HF_MIRROR=https://hf-mirror.com
-docker-compose up -d
+uv add 'elasticrag[web]'
 ```
 
-3. Or create a `.env` file in the project root:
-```env
-HF_MIRROR=https://hf-mirror.com
-```
+### 开发安装
 
-4. Start services:
+包含开发工具：
+
 ```bash
-docker-compose up -d
+uv add 'elasticrag[dev]'
 ```
 
-5. Wait for services to be ready (first time may take longer for model download):
+### 全部安装
+
+包含所有功能：
+
 ```bash
-python main.py wait
+uv add 'elasticrag[all]'
 ```
 
-6. Initialize the system:
+### 从源码安装
+
 ```bash
-python main.py setup
+git clone <repository-url>
+cd elasticrag
+uv sync
+# 或安装包含 web 界面
+uv sync --extra web
 ```
 
-## Model Information
+## 配置
 
-- **Embedding Model**: BAAI/bge-small-en-v1.5
-- **Model Size**: ~133MB (smaller and faster to download)
-- **Vector Dimensions**: 384
-- **Language**: English
-- **Performance**: Good balance of speed and quality for general RAG tasks
+### 环境变量配置
 
-## Configuration for China Users
+创建 `.env` 文件（从 `.env.example` 复制）：
 
-For faster model downloading in China, set the HF_MIRROR environment variable:
-
-### Method 1: Environment Variable (Recommended)
 ```bash
-export HF_MIRROR=https://hf-mirror.com
-docker-compose up -d
+cp .env.example .env
 ```
 
-### Method 2: .env File
-Create a `.env` file in the project root:
-```env
-HF_MIRROR=https://hf-mirror.com
-```
-Then run:
+编辑 `.env` 文件：
+
 ```bash
-docker-compose up -d
+# Elasticsearch Configuration
+ELASTICSEARCH_HOST=http://localhost:9200
+
+# Authentication
+ELASTICRAG_USERNAME=your_username
+ELASTICRAG_API_KEY=your_api_key
+
+# Text Embedding Service
+TEXT_EMBEDDING_URL=http://your-embedding-service:8080/embed
+TEXT_EMBEDDING_API_KEY=your_embedding_api_key
 ```
 
-### Method 3: Inline Environment Variable
+### 命令行参数
+
+你也可以通过命令行参数覆盖环境变量：
+
 ```bash
-HF_MIRROR=https://hf-mirror.com docker-compose up -d
+elasticrag --host localhost:9200 -u admin -k secret setup
 ```
 
-## Troubleshooting
+## 快速开始
 
-### Model Download Issues
-If the embedding service fails to download the model:
+### 1. 初始化系统
 
-1. Check if you've set the HF_MIRROR before starting:
 ```bash
-echo $HF_MIRROR
+elasticrag setup
 ```
 
-2. Check the embedding service logs:
+### 2. 启动 Web 管理界面（可选）
+
+⚠️ **注意**: Web 界面需要额外安装 gradio 依赖：
+
 ```bash
-docker-compose logs -f huggingface-embedding
+# 安装 web 依赖
+uv add 'elasticrag[web]'
+
+# 启动 web 界面
+elasticrag server --port 7860
 ```
 
-3. Stop and remove containers, then restart with mirror:
+然后访问 http://localhost:7860 进入管理界面。
+
+默认管理员账户：
+- 用户名: admin
+- 密码: admin123
+
+### 3. 使用命令行工具
+
 ```bash
-docker-compose down
-export HF_MIRROR=https://hf-mirror.com
-docker-compose up -d
+# 列出可用模型
+elasticrag list-models
+
+# 添加文档
+elasticrag add document.pdf -c my_collection -m my_model
+
+# 搜索文档
+elasticrag search "your query" -c my_collection -m my_model -s 10
 ```
 
-4. For persistent issues, clear the cache volume:
+## CLI 命令参考
+
+### 全局选项
+
+- `--host`: Elasticsearch 主机地址
+- `-u, --username`: 用户名
+- `-k, --api-key`: API 密钥
+- `-v, --verbose`: 启用详细日志
+
+### 命令
+
+- `setup`: 初始化系统
+- `server`: 启动 Gradio Web 管理界面 **（需要安装 web 依赖）**
+- `list-models`: 列出可用模型
+- `list-users`: 列出所有用户
+- `list-collections`: 列出所有集合
+- `list-documents [collection] [model]`: 列出文档
+- `add <file_path> [-c collection] [-m model]`: 添加文档
+- `search <query> [-c collection] [-m model] [-s size]`: 搜索文档
+
+#### server 命令选项
+
+⚠️ **注意**: server 命令需要安装额外依赖：
+
 ```bash
-docker-compose down -v
-export HF_MIRROR=https://hf-mirror.com
-docker-compose up -d
+uv add 'elasticrag[web]'
 ```
 
-### First Time Setup
-- The first startup may take 3-5 minutes for model download
-- Use `docker-compose logs -f huggingface-embedding` to monitor progress
-- The embedding service will be ready once model download completes
+然后可以使用：
 
-## Usage
-
-### Adding Documents
 ```bash
-python main.py add /path/to/document.pdf
+elasticrag server [选项]
+
+选项:
+  --port PORT           Web界面端口 (默认: 7860)
+  --host HOST           Web界面主机 (默认: 0.0.0.0)
+  --share               通过 Gradio 创建公共链接
+  --admin-username USER 管理员用户名
+  --admin-password PASS 管理员密码
 ```
 
-### Searching
+## 依赖说明
+
+### 核心依赖
+
+- `elasticsearch>=8.0.0`: Elasticsearch 客户端
+- `python-dotenv>=1.0.0`: 环境变量管理
+- `aiohttp>=3.10.11`: 异步 HTTP 客户端
+
+### 可选依赖
+
+#### Web 界面 (`elasticrag[web]`)
+
+- `gradio>=4.0.0`: Web 界面框架
+- `pandas>=1.3.0`: 数据处理
+
+#### 开发工具 (`elasticrag[dev]`)
+
+- `pytest>=7.0.0`: 测试框架
+- `pytest-asyncio>=0.21.0`: 异步测试支持
+- `black>=23.0.0`: 代码格式化
+- `isort>=5.12.0`: 导入排序
+
+## Web 管理界面
+
+### 安装 Web 依赖
+
 ```bash
-python main.py search "your search query"
+uv add 'elasticrag[web]'
 ```
 
-### Programmatic Usage
+### 管理员功能
+
+使用管理员账户登录后可以：
+
+- **用户管理**: 查看、添加、删除用户
+- **模型管理**: 查看、添加模型配置
+- **系统监控**: 查看系统状态和资源使用
+
+### 用户功能
+
+使用普通用户账户登录后可以：
+
+- **集合管理**: 查看自己的文档集合
+- **文档管理**: 添加、删除、查看文档
+- **搜索调试**: 在集合中搜索文档并查看结果
+
+### 环境变量配置
+
+Web 界面相关的环境变量：
+
+```bash
+# 管理员账户配置
+ELASTICRAG_ADMIN_USERNAME=admin
+ELASTICRAG_ADMIN_PASSWORD=admin123
+```
+
+## API 使用
+
 ```python
-from rag_system import RAGSystem
+from elasticrag import Client
 
-rag = RAGSystem()
-rag.setup()
+# 创建客户端
+client = Client('http://localhost:9200')
 
-# Add document
-rag.add_document("/path/to/file.pdf")
+# 认证用户
+user = client.authenticate('username', 'api_key')
 
-# Search
-results = rag.search("machine learning")
+# 获取集合
+collection = client.get_collection('my_collection', 'my_model')
 
-# Get answer with context
-answer = rag.get_answer("What is machine learning?")
+# 添加文档
+collection.add('doc_id', 'Document Name', text_content='Your content here')
+
+# 搜索
+results = await collection.query('your query')
 ```
 
-## Docker Services
+## 开发
 
-The system includes:
-- **Elasticsearch 8.17**: Document storage and search
-- **HuggingFace Text Embeddings Inference (CPU)**: Embedding generation using BAAI/bge-small-en-v1.5
-
-### Service URLs
-- Elasticsearch: http://localhost:9200
-- HuggingFace Embedding API: http://localhost:8080
-
-### Managing Services
 ```bash
-# Start services
-docker-compose up -d
+# 安装开发依赖
+uv sync --extra dev
 
-# Check logs
-docker-compose logs -f
+# 安装所有依赖（包括 web）
+uv sync --extra all
 
-# Check embedding service logs specifically
-docker-compose logs -f huggingface-embedding
+# 运行测试
+uv run pytest
 
-# Stop services
-docker-compose down
-
-# Clean up (removes volumes and downloaded models)
-docker-compose down -v
+# 代码格式化
+uv run black .
+uv run isort .
 ```
 
-## System Requirements
+## 许可证
 
-- Docker and Docker Compose
-- At least 4GB RAM for Elasticsearch
-- Additional 1.5GB RAM for CPU-based embedding service
-- No GPU required (CPU-only deployment)
-- Internet connection for initial model download (~133MB)
-
-## Performance Notes
-
-- The bge-small-en-v1.5 model is optimized for both speed and quality
-- Model is downloaded once and cached for future use
-- Good performance for English text embedding tasks
-- First startup includes model download time (3-5 minutes)
-
-This implementation provides a minimal but functional RAG system that leverages modern Elasticsearch capabilities and reliable HuggingFace embeddings with CPU-only requirements.
+MIT License
